@@ -14,3 +14,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy your main worker script
 COPY main.py .
+
+# ✅ This is the crucial missing piece. It tells Runpod how to start your script.
+CMD ["python", "main.py"]
