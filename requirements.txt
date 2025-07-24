@@ -1,7 +1,7 @@
 # RunPod SDK (stable pinned)
 runpod==1.7.13
 
-# PyTorch (updated to 2.2.2 to match xformers requirement)
+# PyTorch (updated to 2.2.2 to resolve conflict with xformers)
 torch==2.2.2
 torchvision==0.17.2 # Compatible with torch 2.2.2
 torchaudio==2.2.2   # Compatible with torch 2.2.2
@@ -27,4 +27,5 @@ flask==3.0.3
 xformers==0.0.25.post1
 
 # IP-Adapter (Tencent official) — install from source
+# Make sure your Dockerfile installs git, build-essential, python3-dev
 git+https://github.com/tencent-ailab/IP-Adapter.git

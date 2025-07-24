@@ -10,33 +10,34 @@ ENV PYTHONUNBUFFERED=1
 ENV CUDA_HOME=/usr/local/cuda
 
 # Install system dependencies:
-# - git for cloning repositories (like IP-Adapter if needed or other package management)
+# - git for cloning repositories (like IP-Adapter)
 # - ffmpeg for video processing (used by diffusers export_to_video)
-# - build-essential for compiling some Python packages (e.g., controlnet-aux dependencies)
+# - build-essential for compiling some Python packages (e.g., controlnet-aux, or direct Git installs)
+# - python3-dev for Python header files, needed for compiling Python extensions
 # We use --no-install-recommends to keep the image size smaller and clean up apt cache.
 RUN echo "--- Updating apt packages and installing system dependencies ---" && \
     apt-get update && \
-    apt-get install -y --no-install-recommends git ffmpeg build-essential && \
+    apt-get install -y --no-install-recommends \
+        git \
+        ffmpeg \
+        build-essential \
+        python3-dev && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \
     echo "--- System dependencies installed ---"
 
 # Copy the requirements file and install Python packages.
 # --no-cache-dir prevents pip from storing downloaded packages, reducing image size.
-# --upgrade pip ensures pip is up-to-date
+# --upgrade pip ensures pip is up-to-date, setuptools and wheel are also good to update.
 COPY requirements.txt .
 RUN echo "--- Installing Python packages from requirements.txt ---" && \
-    pip install --upgrade pip && \
+    pip install --upgrade pip setuptools wheel && \
     pip install --no-cache-dir -r requirements.txt \
     --extra-index-url https://download.pytorch.org/whl/cu118 && \
     echo "--- Python packages installed ---"
 
 # --- OPTIONAL: Pre-fetch Hugging Face models during build ---
-# This can significantly speed up worker cold starts by downloading large models
-# during the image build process, rather than during the first job's execution.
-# Uncomment and adapt if you find worker initialization is too slow due to downloads.
-# Remember to set HUGGING_FACE_HUB_TOKEN as a build-arg if using gated models here.
-# Example: docker build --build-arg HUGGING_FACE_HUB_TOKEN=<YOUR_TOKEN> .
+# (Keep this section commented out unless you actively need it and configure the token)
 # RUN --mount=type=secret,id=huggingface_token,target=/run/secrets/huggingface_token \
 #     export HF_HOME="/app/hf_cache" && \
 #     mkdir -p ${HF_HOME} && \
@@ -63,10 +64,7 @@ RUN echo "--- Installing Python packages from requirements.txt ---" && \
 COPY main.py .
 
 # Expose port 3000 for the health check server.
-# This is crucial for RunPod to determine if your worker is healthy.
 EXPOSE 3000
 
 # This is the command that RunPod will execute when the container starts.
-# It starts your main.py script, which then initializes the RunPod worker and
-# the health check server.
 CMD ["python", "main.py"]
