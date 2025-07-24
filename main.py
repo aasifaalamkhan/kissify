@@ -54,34 +54,39 @@ def generate_video(job):
     if pipe is None:
         print("⏳ Loading models for the first time...")
         
+        # ✅ Get the Hugging Face token from the environment variables
+        HUGGING_FACE_TOKEN = os.getenv("HUGGING_FACE_HUB_TOKEN")
+        if HUGGING_FACE_TOKEN:
+            print("🔐 Using HF token:", HUGGING_FACE_TOKEN[:8] + "...")
+        else:
+            print("⚠️ HF token not found. Downloads may fail for gated models.")
+            
         base_model_id = "SG161222/Realistic_Vision_V5.1_noVAE"
         motion_module_id = "guoyww/animatediff-motion-module-v3"
         ip_adapter_repo_id = "h94/IP-Adapter"
         
-        openpose_controlnet = ControlNetModel.from_pretrained("lllyasviel/control_v11p_sd15_openpose", torch_dtype=torch.float16)
-        depth_controlnet = ControlNetModel.from_pretrained("lllyasviel/control_v11f1p_sd15_depth", torch_dtype=torch.float16)
-        openpose_detector = OpenposeDetector.from_pretrained("lllyasviel/ControlNet")
-        midas_detector = MidasDetector.from_pretrained("lllyasviel/ControlNet")
+        openpose_controlnet = ControlNetModel.from_pretrained("lllyasviel/control_v11p_sd15_openpose", torch_dtype=torch.float16, token=HUGGING_FACE_TOKEN)
+        depth_controlnet = ControlNetModel.from_pretrained("lllyasviel/control_v11f1p_sd15_depth", torch_dtype=torch.float16, token=HUGGING_FACE_TOKEN)
+        openpose_detector = OpenposeDetector.from_pretrained("lllyasviel/ControlNet", token=HUGGING_FACE_TOKEN)
+        midas_detector = MidasDetector.from_pretrained("lllyasviel/ControlNet", token=HUGGING_FACE_TOKEN)
         
         pipe = AnimateDiffPipeline.from_pretrained(
             base_model_id,
             controlnet=[openpose_controlnet, depth_controlnet],
             torch_dtype=torch.float16,
+            token=HUGGING_FACE_TOKEN
         )
         pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
-        
-        # ✅ CORRECT: Load the motion module using the proper method
-        pipe.load_motion_module(motion_module_id, unet_additional_kwargs={"use_inflated_groupnorm": True})
-        
+        pipe.load_motion_module(motion_module_id, unet_additional_kwargs={"use_inflated_groupnorm": True}, token=HUGGING_FACE_TOKEN)
         pipe.enable_model_cpu_offload()
 
         image_encoder = CLIPVisionModelWithProjection.from_pretrained(
-            ip_adapter_repo_id, subfolder="models/image_encoder", torch_dtype=torch.float16
+            ip_adapter_repo_id, subfolder="models/image_encoder", torch_dtype=torch.float16, token=HUGGING_FACE_TOKEN
         ).to("cuda")
         image_processor = CLIPImageProcessor.from_pretrained(
-            ip_adapter_repo_id, subfolder="models/image_encoder"
+            ip_adapter_repo_id, subfolder="models/image_encoder", token=HUGGING_FACE_TOKEN
         )
-        ip_adapter_path = hf_hub_download(repo_id=ip_adapter_repo_id, filename="ip-adapter_sd15.bin")
+        ip_adapter_path = hf_hub_download(repo_id=ip_adapter_repo_id, filename="ip-adapter_sd15.bin", token=HUGGING_FACE_TOKEN)
         ip_adapter_weights = torch.load(ip_adapter_path, map_location="cpu")
         image_proj_model = IPAdapterImageProj(ip_adapter_weights).to("cuda")
         
