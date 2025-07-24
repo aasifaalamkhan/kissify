@@ -2,40 +2,50 @@
 
 import runpod
 import torch
-from diffusers import AnimateDiffPipeline
+from diffusers import AnimateDiffPipeline, ControlNetModel, MotionAdapter
 from diffusers.utils import export_to_video
-import tempfile
+from controlnet_aux import CannyDetector
+from PIL import Image
+import numpy as np
+import base64
+import io
+import requests
 import os
-import requests # Use the requests library for uploading
+import tempfile
 
-# --- MODEL SETUP ---
-model_id = "ByteDance/AnimateDiff-Lightning"
-# For better performance on most GPUs, consider using float16
-torch_dtype = torch.float16
-variant = "fp16"
+# --------------------------------- Model Setup -------------------------------- #
+# This setup is more complex as it combines a realistic model, a motion adapter,
+# and a ControlNet model to guide the generation from an image.
 
-# Load AnimateDiff with memory optimization
+# Use a realistic base model that works well with ControlNet
+BASE_MODEL_ID = "emilianJR/epiCRealism"
+MOTION_ADAPTER_ID = "guoyww/animatediff-motion-adapter-v1-5-2"
+CONTROLNET_MODEL_ID = "lllyasviel/sd-controlnet-canny"
+TORCH_DTYPE = torch.float16
+
+# Load all the necessary components
+canny_detector = CannyDetector()
+motion_adapter = MotionAdapter.from_pretrained(MOTION_ADAPTER_ID, torch_dtype=TORCH_DTYPE)
+controlnet = ControlNetModel.from_pretrained(CONTROLNET_MODEL_ID, torch_dtype=TORCH_DTYPE)
+
 pipe = AnimateDiffPipeline.from_pretrained(
-    model_id,
-    torch_dtype=torch_dtype,
-    variant=variant
+    BASE_MODEL_ID,
+    motion_adapter=motion_adapter,
+    controlnet=controlnet,
+    torch_dtype=TORCH_DTYPE
 )
 pipe.enable_model_cpu_offload()
 
 
-# --- UPLOAD FUNCTION ---
+# ------------------------------ File Upload Utility ----------------------------- #
 def upload_to_direct_linker(filepath):
-    """
-    Uploads a file to a service that provides a direct link.
-    This uses litterbox.catbox.moe which keeps files for 24h.
-    """
+    """ Uploads a file and returns a direct link to it. """
     try:
         with open(filepath, 'rb') as f:
             files = {'fileToUpload': (os.path.basename(filepath), f)}
             data = {'reqtype': 'fileupload', 'time': '24h'}
             response = requests.post('https://litterbox.catbox.moe/resources/internals/api.php', files=files, data=data)
-            response.raise_for_status()  # This will throw an error for a bad response
-            # The response text is the direct URL
+            response.raise_for_status()
             direct_url = response.text
             print(f"Upload successful. Direct URL: {direct_url}")
             return direct_url
@@ -44,33 +54,55 @@ def upload_to_direct_linker(filepath):
         return str(e)
 
 
-# --- HANDLER FUNCTION ---
-def generate_kissing_video(job):
-    """
-    The main handler for the Runpod serverless worker.
-    """
+# --------------------------------- Job Handler ---------------------------------- #
+def generate_video_from_image(job):
+    """ The main handler function for the Runpod serverless worker. """
     job_input = job.get('input', {})
-    prompt = job_input.get('prompt', 'a couple kissing, photorealistic, 4k')
-    
-    # Generate video frames
-    frames = pipe(prompt=prompt, num_inference_steps=4, num_frames=16).frames[0]
+    prompt = job_input.get('prompt', 'a couple kissing, beautiful, cinematic, masterpiece')
+    base64_image_str = job_input.get('init_image')
 
-    # Use a temporary directory to save the video
+    if not base64_image_str:
+        return {"error": "An initial image ('init_image') is required."}
+
+    # 1. Decode the input image from base64
+    try:
+        image_bytes = base64.b64decode(base64_image_str)
+        source_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    except Exception as e:
+        return {"error": f"Failed to decode base64 image: {str(e)}"}
+
+    # 2. Prepare the control image using Canny edge detection
+    # This creates an "edge map" that guides the video generation.
+    control_image = canny_detector(
+        source_image,
+        detect_resolution=384,
+        image_resolution=512,
+        low_threshold=100,
+        high_threshold=200,
+    )
+
+    # 3. Generate video frames using the prompt and control image
+    print("Generating video frames...")
+    output = pipe(
+        prompt=prompt,
+        image=control_image,
+        num_frames=16,
+        guidance_scale=7.5,
+        controlnet_conditioning_scale=0.7, # How strongly to follow the image
+    )
+    frames = output.frames[0]
+
+    # 4. Save frames to a video file and upload it
     with tempfile.TemporaryDirectory() as output_dir:
         video_path = os.path.join(output_dir, "generated_video.mp4")
-        
-        # Export frames to a video file
-        export_to_video(frames, video_path, fps=10)
-
-        # Upload the video to get a direct link
+        export_to_video(frames, video_path, fps=8)
         direct_video_url = upload_to_direct_linker(video_path)
 
-        # Return the URL in the correct JSON format for the Flutter app
-        return {
-            "output": {
-                "video_url": direct_video_url
-            }
-        }
+        # 5. Return the final URL in the expected format
+        if "Error" in direct_video_url:
+             return {"error": direct_video_url}
+        
+        return {"output": {"video_url": direct_video_url}}
 
 # Start the serverless worker
-runpod.serverless.start({"handler": generate_kissing_video})
+runpod.serverless.start({"handler": generate_video_from_image})
