@@ -16,7 +16,8 @@ import io
 import requests
 import os
 import tempfile
-# import asyncio # Removed as generate_video is no longer async unless explicit await is needed
+from threading import Thread # Added for health check server
+from flask import Flask # Added for health check server (requires 'flask' in requirements.txt)
 
 # Optimize cuDNN for consistent input shapes (like image sizes)
 torch.backends.cudnn.benchmark = True
@@ -56,6 +57,15 @@ def upload_to_catbox(filepath):
         print(f"❌ Error uploading to Catbox: {traceback.format_exc()}", flush=True) # Detailed log
         return f"Error uploading: {str(e)}"
 
+# --------------------------------- Health Check Server ---------------------------------- #
+def run_healthcheck_server():
+    app = Flask(__name__)
+    @app.route('/healthz')
+    def health():
+        return "ok"
+    # Use 0.0.0.0 to make it accessible from outside the container
+    app.run(host="0.0.0.0", port=3000, debug=False, use_reloader=False)
+
 # --------------------------------- Job Handler ---------------------------------- #
 def generate_video(job): # Changed back to def (synchronous)
     print("📥 Job received:", job, flush=True) # Log the incoming job payload
@@ -73,7 +83,8 @@ def generate_video(job): # Changed back to def (synchronous)
             if HUGGING_FACE_TOKEN:
                 print("🔐 Using HF token:", HUGGING_FACE_TOKEN[:8] + "...", flush=True)
             else:
-                print("⚠️ HF token not found. Downloads may fail for gated models.", flush=True) # Corrected quote
+                # Corrected print statement with proper closing quote
+                print("⚠️ HF token not found. Downloads may fail for gated models.", flush=True)
 
             base_model_id = "SG161222/Realistic_Vision_V5.1_noVAE"
             motion_module_id = "guoyww/animatediff-motion-module-v3"
@@ -159,39 +170,51 @@ def generate_video(job): # Changed back to def (synchronous)
         export_to_video(frames, video_path, fps=fps)
 
         print("🚀 Uploading video...", flush=True)
-        url = upload_to_catbox(video_path)
+        url = upload_to_catbox(filepath=video_path) # Changed to use named argument for clarity
         if "Error" in url:
             return {"error": url}
         return {"output": {"video_url": url}}
 
-# Starts the job listener – REQUIRED!
+# Entry point for the RunPod worker
 if __name__ == "__main__": # Guard for direct execution
-    print("🚀 Ready to receive jobs...", flush=True)
-    runpod.serverless.start({"handler": generate_video})
+    # Start the health check server in a separate thread
+    # This keeps the container alive and responsive to health checks
+    Thread(target=run_healthcheck_server, daemon=True).start()
 
-    # Optional: Local Test Mode (uncomment to use)
+    try:
+        print("🚀 Ready to receive jobs...", flush=True)
+        runpod.serverless.start({"handler": generate_video})
+    except Exception as e:
+        # Catch and log any exceptions that prevent runpod.serverless.start from fully initializing
+        print(f"❌ Server crashed during startup: {traceback.format_exc()}", flush=True)
+        # It's crucial for the container to exit with a non-zero code if startup fails
+        # This will be handled by RunPod's monitoring, which will eventually terminate the unhealthy worker
+        # No explicit exit(1) needed here, as an uncaught exception will do that naturally.
+
+    # Optional: Local Test Mode (uncomment to use and comment out runpod.serverless.start above)
     # To use this, you would need to provide a valid base64 encoded image string
     # For example, you can convert a small image to base64 online and paste it here.
-    # import asyncio
+    # import asyncio # No longer needed if generate_video is synchronous.
     # print("\n--- Running Local Test ---", flush=True)
-    # with open("test_image.jpg", "rb") as image_file:
-    #     base64_test_image = base64.b64encode(image_file.read()).decode('utf-8')
-    #
-    # fake_job = {
-    #     "input": {
-    #         "init_image": base64_test_image, # Replace with a real base64 image string for testing
-    #         "prompt": "a couple kissing under the moonlight, cinematic, romantic",
-    #         "num_frames": 16,
-    #         "fps": 8,
-    #         "ip_adapter_scale": 0.8,
-    #         "openpose_scale": 1.2,
-    #         "depth_scale": 0.6
-    #     }
-    # }
     # try:
-    #     # Note: If runpod.serverless.start is active, this asyncio.run will not be reached
-    #     # For standalone local testing, comment out runpod.serverless.start(...) above
-    #     result = generate_video(fake_job) # Call synchronously now
+    #     # Example: Replace with actual base64 image content for testing
+    #     # with open("path/to/your/local_test_image.jpg", "rb") as image_file:
+    #     #     base64_test_image = base64.b64encode(image_file.read()).decode('utf-8')
+    #     base64_test_image = "YOUR_BASE64_IMAGE_STRING_HERE"
+    #
+    #     fake_job = {
+    #         "input": {
+    #             "init_image": base64_test_image,
+    #             "prompt": "a couple kissing under the moonlight, cinematic, romantic",
+    #             "num_frames": 16,
+    #             "fps": 8,
+    #             "ip_adapter_scale": 0.8,
+    #             "openpose_scale": 1.2,
+    #             "depth_scale": 0.6
+    #         }
+    #     }
+    #
+    #     result = generate_video(fake_job) # Call synchronously for local testing
     #     print("Local test result:", result, flush=True)
     # except Exception as e:
     #     print(f"Local test failed: {traceback.format_exc()}", flush=True)

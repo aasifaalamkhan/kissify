@@ -18,5 +18,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy your main worker script
 COPY main.py .
 
+# Expose port for health checks (optional but helpful for some platforms like RunPod)
+EXPOSE 3000
+
 # This is the crucial missing piece. It tells Runpod how to start your script.
 CMD ["python", "main.py"]
