@@ -1,14 +1,16 @@
 # requirements.txt
 
-runpod
-torch
-diffusers
-transformers
-accelerate
-requests
-opencv-python-headless
-Pillow
-safetensors
-controlnet_aux
+runpod==1.9.2
+torch==2.2.0
+
+# Pinning core libraries to a known-good, compatible set
+diffusers==0.27.2
+transformers==4.38.2
+accelerate==0.27.2
+Pillow==10.2.0
+safetensors==0.4.2
+opencv-python-headless==4.9.0.80
+requests==2.31.0
+
 # Install IP-Adapter directly from the source repository
 git+https://github.com/tencent-ailab/IP-Adapter.git
