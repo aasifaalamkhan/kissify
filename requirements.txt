@@ -8,4 +8,7 @@ accelerate
 requests
 opencv-python-headless
 Pillow
-ip-adapter
+safetensors
+controlnet_aux
+# Install IP-Adapter directly from the source repository
+git+https://github.com/tencent-ailab/IP-Adapter.git

@@ -1,6 +1,6 @@
 # Dockerfile
 
-# ✅ Use the official PyTorch image with CUDA 11.8 and Python 3.10
+# Use the official PyTorch image with CUDA 11.8 and Python 3.10
 FROM pytorch/pytorch:2.2.0-cuda11.8-cudnn8-devel
 
 WORKDIR /app
@@ -14,5 +14,3 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy your main worker script
 COPY main.py .
-
-# No CMD or ENTRYPOINT is needed for Runpod Serverless
