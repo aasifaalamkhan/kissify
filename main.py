@@ -1,5 +1,3 @@
-# main.py
-
 import runpod
 import torch
 from diffusers import AnimateDiffPipeline, MotionAdapter, DDIMScheduler
