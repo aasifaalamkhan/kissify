@@ -7,5 +7,5 @@ transformers
 accelerate
 requests
 opencv-python-headless
-controlnet_aux
 Pillow
+ip-adapter
