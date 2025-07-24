@@ -1,8 +1,9 @@
 # main.py
-print("✅ main.py started") # First line to confirm script execution
+print("✅ main.py started", flush=True) # First line to confirm script execution, with flush=True
 
 import runpod
 import torch
+import traceback # Import traceback for detailed error logging
 from diffusers import AnimateDiffPipeline, MotionAdapter, DDIMScheduler, ControlNetModel
 from diffusers.utils import export_to_video
 from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
@@ -15,9 +16,12 @@ import io
 import requests
 import os
 import tempfile
-import asyncio # Added for local testing with asyncio.run
+# import asyncio # Removed as generate_video is no longer async unless explicit await is needed
 
-print("✅ Container started. Script parsing begins.")
+# Optimize cuDNN for consistent input shapes (like image sizes)
+torch.backends.cudnn.benchmark = True
+
+print("✅ Container started. Script parsing begins.", flush=True)
 
 # ------------------------------ IP-Adapter Helper Class ----------------------------- #
 class IPAdapterImageProj(torch.nn.Module):
@@ -49,55 +53,62 @@ def upload_to_catbox(filepath):
             response.raise_for_status()
             return response.text
     except Exception as e:
+        print(f"❌ Error uploading to Catbox: {traceback.format_exc()}", flush=True) # Detailed log
         return f"Error uploading: {str(e)}"
 
 # --------------------------------- Job Handler ---------------------------------- #
-async def generate_video(job): # Changed to async def
-    print("📥 Job received:", job) # Log the incoming job payload
+def generate_video(job): # Changed back to def (synchronous)
+    print("📥 Job received:", job, flush=True) # Log the incoming job payload
     global pipe, image_encoder, image_proj_model, image_processor, openpose_detector, midas_detector
 
     if pipe is None:
-        print("⏳ Starting model loading...")
+        print("⏳ Starting model loading...", flush=True)
 
-        if not torch.cuda.is_available(): # Check for CUDA availability
-            raise RuntimeError("CUDA is not available! GPU required for this application.")
+        try: # Added try-except for model loading
+            if not torch.cuda.is_available(): # Check for CUDA availability
+                raise RuntimeError("CUDA is not available! GPU required for this application.")
 
-        HUGGING_FACE_TOKEN = os.getenv("HUGGING_FACE_HUB_TOKEN")
-        if HUGGING_FACE_TOKEN:
-            print("🔐 Using HF token:", HUGGING_FACE_TOKEN[:8] + "...")
-        else:
-            print(⚠️ HF token not found. Downloads may fail for gated models.")
+            # Provide an empty string fallback for token
+            HUGGING_FACE_TOKEN = os.getenv("HUGGING_FACE_HUB_TOKEN", "")
+            if HUGGING_FACE_TOKEN:
+                print("🔐 Using HF token:", HUGGING_FACE_TOKEN[:8] + "...", flush=True)
+            else:
+                print("⚠️ HF token not found. Downloads may fail for gated models.", flush=True) # Corrected quote
 
-        base_model_id = "SG161222/Realistic_Vision_V5.1_noVAE"
-        motion_module_id = "guoyww/animatediff-motion-module-v3"
-        ip_adapter_repo_id = "h94/IP-Adapter"
+            base_model_id = "SG161222/Realistic_Vision_V5.1_noVAE"
+            motion_module_id = "guoyww/animatediff-motion-module-v3"
+            ip_adapter_repo_id = "h94/IP-Adapter"
 
-        openpose_controlnet = ControlNetModel.from_pretrained("lllyasviel/control_v11p_sd15_openpose", torch_dtype=torch.float16, token=HUGGING_FACE_TOKEN)
-        depth_controlnet = ControlNetModel.from_pretrained("lllyasviel/control_v11f1p_sd15_depth", torch_dtype=torch.float16, token=HUGGING_FACE_TOKEN)
-        openpose_detector = OpenposeDetector.from_pretrained("lllyasviel/ControlNet", token=HUGGING_FACE_TOKEN)
-        midas_detector = MidasDetector.from_pretrained("lllyasviel/ControlNet", token=HUGGING_FACE_TOKEN)
+            openpose_controlnet = ControlNetModel.from_pretrained("lllyasviel/control_v11p_sd15_openpose", torch_dtype=torch.float16, token=HUGGING_FACE_TOKEN)
+            depth_controlnet = ControlNetModel.from_pretrained("lllyasviel/control_v11f1p_sd15_depth", torch_dtype=torch.float16, token=HUGGING_FACE_TOKEN)
+            openpose_detector = OpenposeDetector.from_pretrained("lllyasviel/ControlNet", token=HUGGING_FACE_TOKEN)
+            midas_detector = MidasDetector.from_pretrained("lllyasviel/ControlNet", token=HUGGING_FACE_TOKEN)
 
-        pipe = AnimateDiffPipeline.from_pretrained(
-            base_model_id,
-            controlnet=[openpose_controlnet, depth_controlnet],
-            torch_dtype=torch.float16,
-            token=HUGGING_FACE_TOKEN
-        )
-        pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
-        pipe.load_motion_module(motion_module_id, unet_additional_kwargs={"use_inflated_groupnorm": True}, token=HUGGING_FACE_TOKEN)
-        pipe.enable_model_cpu_offload()
+            pipe = AnimateDiffPipeline.from_pretrained(
+                base_model_id,
+                controlnet=[openpose_controlnet, depth_controlnet],
+                torch_dtype=torch.float16,
+                token=HUGGING_FACE_TOKEN
+            )
+            pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
+            pipe.load_motion_module(motion_module_id, unet_additional_kwargs={"use_inflated_groupnorm": True}, token=HUGGING_FACE_TOKEN)
+            pipe.enable_model_cpu_offload()
 
-        image_encoder = CLIPVisionModelWithProjection.from_pretrained(
-            ip_adapter_repo_id, subfolder="models/image_encoder", torch_dtype=torch.float16, token=HUGGING_FACE_TOKEN
-        ).to("cuda")
-        image_processor = CLIPImageProcessor.from_pretrained(
-            ip_adapter_repo_id, subfolder="models/image_encoder", token=HUGGING_FACE_TOKEN
-        )
-        ip_adapter_path = hf_hub_download(repo_id=ip_adapter_repo_id, filename="ip-adapter_sd15.bin", token=HUGGING_FACE_TOKEN)
-        ip_adapter_weights = torch.load(ip_adapter_path, map_location="cpu")
-        image_proj_model = IPAdapterImageProj(ip_adapter_weights).to("cuda")
+            image_encoder = CLIPVisionModelWithProjection.from_pretrained(
+                ip_adapter_repo_id, subfolder="models/image_encoder", torch_dtype=torch.float16, token=HUGGING_FACE_TOKEN
+            ).to("cuda")
+            image_processor = CLIPImageProcessor.from_pretrained(
+                ip_adapter_repo_id, subfolder="models/image_encoder", token=HUGGING_FACE_TOKEN
+            )
+            ip_adapter_path = hf_hub_download(repo_id=ip_adapter_repo_id, filename="ip-adapter_sd15.bin", token=HUGGING_FACE_TOKEN)
+            ip_adapter_weights = torch.load(ip_adapter_path, map_location="cpu")
+            image_proj_model = IPAdapterImageProj(ip_adapter_weights).to("cuda")
 
-        print("✅ Models loaded successfully.")
+            print("✅ Models loaded successfully.", flush=True)
+        except Exception as e:
+            print(f"❌ Model load failed: {traceback.format_exc()}", flush=True) # Detailed log for model load errors
+            return {"error": "Model load failed: " + str(e)}
+
 
     job_input = job.get('input', {})
     base64_image = job_input.get('init_image')
@@ -110,15 +121,16 @@ async def generate_video(job): # Changed to async def
     depth_scale = min(max(float(job_input.get('depth_scale', 0.5)), 0.0), 1.5)
 
     if not base64_image:
-        print("❌ 'init_image' missing in job input.")
+        print("❌ 'init_image' missing in job input.", flush=True)
         return {"error": "Missing 'init_image' base64 input."}
 
     try:
         init_image = Image.open(io.BytesIO(base64.b64decode(base64_image))).convert("RGB")
     except Exception as e:
+        print(f"❌ Image decode error: {traceback.format_exc()}", flush=True) # Detailed log
         return {"error": f"Image decode error: {str(e)}"}
 
-    print("🔍 Preprocessing image...")
+    print("🔍 Preprocessing image...", flush=True)
     processed_image = image_processor(images=init_image, return_tensors="pt").pixel_values.to("cuda", dtype=torch.float16)
     clip_features = image_encoder(processed_image).image_embeds
     image_embeds = image_proj_model(clip_features)
@@ -128,7 +140,7 @@ async def generate_video(job): # Changed to async def
 
     cross_attention_kwargs = {"ip_adapter_image_embeds": image_embeds, "scale": ip_adapter_scale}
 
-    print("✨ Inference started...")
+    print("✨ Inference started...", flush=True)
     output = pipe(
         prompt=prompt,
         negative_prompt="ugly, distorted, low quality, cropped, blurry",
@@ -141,12 +153,12 @@ async def generate_video(job): # Changed to async def
     )
     frames = output.frames[0]
 
-    print("📼 Exporting video...")
+    print("📼 Exporting video...", flush=True)
     with tempfile.TemporaryDirectory() as tmpdir:
         video_path = os.path.join(tmpdir, "kissify.mp4")
         export_to_video(frames, video_path, fps=fps)
 
-        print("🚀 Uploading video...")
+        print("🚀 Uploading video...", flush=True)
         url = upload_to_catbox(video_path)
         if "Error" in url:
             return {"error": url}
@@ -154,13 +166,14 @@ async def generate_video(job): # Changed to async def
 
 # Starts the job listener – REQUIRED!
 if __name__ == "__main__": # Guard for direct execution
-    print("🚀 Ready to receive jobs...")
+    print("🚀 Ready to receive jobs...", flush=True)
     runpod.serverless.start({"handler": generate_video})
 
     # Optional: Local Test Mode (uncomment to use)
     # To use this, you would need to provide a valid base64 encoded image string
     # For example, you can convert a small image to base64 online and paste it here.
-    # print("\n--- Running Local Test ---")
+    # import asyncio
+    # print("\n--- Running Local Test ---", flush=True)
     # with open("test_image.jpg", "rb") as image_file:
     #     base64_test_image = base64.b64encode(image_file.read()).decode('utf-8')
     #
@@ -176,9 +189,9 @@ if __name__ == "__main__": # Guard for direct execution
     #     }
     # }
     # try:
-    #     # runpod.serverless.start handles the asyncio loop, so direct asyncio.run is for standalone testing without runpod.serverless
-    #     # If you uncomment the local test, ensure runpod.serverless.start is commented out for that test run
-    #     result = asyncio.run(generate_video(fake_job))
-    #     print("Local test result:", result)
+    #     # Note: If runpod.serverless.start is active, this asyncio.run will not be reached
+    #     # For standalone local testing, comment out runpod.serverless.start(...) above
+    #     result = generate_video(fake_job) # Call synchronously now
+    #     print("Local test result:", result, flush=True)
     # except Exception as e:
-    #     print(f"Local test failed: {e}")
+    #     print(f"Local test failed: {traceback.format_exc()}", flush=True)
