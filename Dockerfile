@@ -1,6 +1,7 @@
 # Dockerfile
 
-FROM runpod/pytorch:2.2.0-py3.10-cuda12.1.1-devel-20240412
+# ✅ Using a newer, available PyTorch 2.3 base image from Runpod
+FROM runpod/pytorch:2.3.0-py3.10-cuda12.1.1-devel-20240606
 
 WORKDIR /app
 
@@ -10,5 +11,3 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the worker script
 COPY main.py .
-
-# The runpod library handles the entrypoint
