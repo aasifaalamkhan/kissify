@@ -27,7 +27,8 @@ RUN echo "--- Updating apt packages and installing system dependencies ---" && \
 COPY requirements.txt .
 RUN echo "--- Installing Python packages from requirements.txt ---" && \
     pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir -r requirements.txt \
+    --extra-index-url https://download.pytorch.org/whl/cu118 && \
     echo "--- Python packages installed ---"
 
 # --- OPTIONAL: Pre-fetch Hugging Face models during build ---

@@ -2,13 +2,10 @@
 runpod==1.7.13
 
 # PyTorch (matches base image pytorch/pytorch:2.2.0-cuda11.8)
-torch==2.2.0+cu118
-# torchvision is usually bundled with torch, but explicitly adding for clarity/safety
-torchvision==0.17.0+cu118
-# Adding torchaudio for completeness, often accompanies torch/torchvision
-torchaudio==2.2.0+cu118
-# For CUDA 11.8 specific builds, ensure you use the correct tag.
-# You can check available builds here: https://download.pytorch.org/whl/torch_stable.html
+# Remove +cu118 suffix here, as it will be handled by --extra-index-url
+torch==2.2.0
+torchvision==0.17.0
+torchaudio==2.2.0
 
 # Core Stable Diffusion / AnimateDiff dependencies
 diffusers==0.27.2
@@ -29,10 +26,8 @@ flask==3.0.3
 
 # Memory and performance optimization (highly recommended for GPUs)
 # Install xformers if you have a compatible GPU and enough memory.
-# This often needs to be installed with specific CUDA versions, verify its compatibility.
 # For CUDA 11.8, try:
-xformers==0.0.25.post1 # or a version compatible with your CUDA 11.8 and torch 2.2.0
+xformers==0.0.25.post1
 
 # IP-Adapter (Tencent official) — install from source
-# This ensures you get the latest version from the repository.
 git+https://github.com/tencent-ailab/IP-Adapter.git
