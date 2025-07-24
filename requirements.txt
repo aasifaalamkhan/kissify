@@ -2,7 +2,10 @@
 
 runpod
 torch
-diffusers==0.27.2
+diffusers
 transformers
 accelerate
 requests
+opencv-python-headless
+controlnet_aux
+Pillow
