@@ -3,6 +3,8 @@ runpod==1.7.13
 
 # PyTorch (matches base image pytorch/pytorch:2.2.0-cuda11.8)
 torch==2.2.0
+# torchvision is usually bundled with torch, but explicitly adding for clarity/safety
+torchvision==0.17.0
 
 # Core Stable Diffusion / AnimateDiff dependencies
 diffusers==0.27.2
@@ -18,8 +20,9 @@ requests==2.31.0
 # ControlNet utilities
 controlnet-aux==0.0.6
 
-# For web fallback or local testing
+# For the health check server
 flask==3.0.3
 
 # IP-Adapter (Tencent official) — install from source
+# This ensures you get the latest version from the repository.
 git+https://github.com/tencent-ailab/IP-Adapter.git
