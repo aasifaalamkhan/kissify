@@ -1,5 +1,4 @@
 # main.py
-# Final version - forcing a new build
 
 import runpod
 import torch
@@ -15,6 +14,8 @@ import io
 import requests
 import os
 import tempfile
+
+print("✅ Container started. Script parsing begins.")
 
 # ------------------------------ IP-Adapter Helper Class ----------------------------- #
 class IPAdapterImageProj(torch.nn.Module):
@@ -50,12 +51,12 @@ def upload_to_catbox(filepath):
 
 # --------------------------------- Job Handler ---------------------------------- #
 def generate_video(job):
+    print("📥 Job received:", job) # Log the incoming job payload
     global pipe, image_encoder, image_proj_model, image_processor, openpose_detector, midas_detector
 
     if pipe is None:
-        print("⏳ Loading models for the first time...")
+        print("⏳ Starting model loading...")
         
-        # ✅ Get the Hugging Face token from the environment variables
         HUGGING_FACE_TOKEN = os.getenv("HUGGING_FACE_HUB_TOKEN")
         if HUGGING_FACE_TOKEN:
             print("🔐 Using HF token:", HUGGING_FACE_TOKEN[:8] + "...")
@@ -104,6 +105,7 @@ def generate_video(job):
     depth_scale = min(max(float(job_input.get('depth_scale', 0.5)), 0.0), 1.5)
 
     if not base64_image:
+        print("❌ 'init_image' missing in job input.")
         return {"error": "Missing 'init_image' base64 input."}
 
     try:
@@ -145,4 +147,6 @@ def generate_video(job):
             return {"error": url}
         return {"output": {"video_url": url}}
 
+# Starts the job listener – REQUIRED!
+print("🚀 Ready to receive jobs...")
 runpod.serverless.start({"handler": generate_video})
