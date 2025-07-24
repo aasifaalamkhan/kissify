@@ -1,11 +1,10 @@
 # RunPod SDK (stable pinned)
 runpod==1.7.13
 
-# PyTorch (matches base image pytorch/pytorch:2.2.0-cuda11.8)
-# Remove +cu118 suffix here, as it will be handled by --extra-index-url
-torch==2.2.0
-torchvision==0.17.0
-torchaudio==2.2.0
+# PyTorch (updated to 2.2.2 to match xformers requirement)
+torch==2.2.2
+torchvision==0.17.2 # Compatible with torch 2.2.2
+torchaudio==2.2.2   # Compatible with torch 2.2.2
 
 # Core Stable Diffusion / AnimateDiff dependencies
 diffusers==0.27.2
@@ -24,9 +23,7 @@ controlnet-aux==0.0.6
 # For the health check server
 flask==3.0.3
 
-# Memory and performance optimization (highly recommended for GPUs)
-# Install xformers if you have a compatible GPU and enough memory.
-# For CUDA 11.8, try:
+# Memory and performance optimization (requires torch 2.2.2)
 xformers==0.0.25.post1
 
 # IP-Adapter (Tencent official) — install from source
