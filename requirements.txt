@@ -1,16 +1,20 @@
-# requirements.txt
+# Runpod SDK (explicitly pinned stable version)
+runpod==1.7.13
 
-runpod==1.9.2
+# PyTorch (base image: pytorch/pytorch:2.2.0-cuda11.8)
 torch==2.2.0
 
-# Pinning core libraries to a known-good, compatible set
+# Core AI libraries
 diffusers==0.27.2
 transformers==4.38.2
 accelerate==0.27.2
-Pillow==10.2.0
 safetensors==0.4.2
+Pillow==10.2.0
 opencv-python-headless==4.9.0.80
 requests==2.31.0
 
-# Install IP-Adapter directly from the source repository
+# ControlNet utilities
+controlnet-aux==0.0.6
+
+# IP-Adapter from GitHub (latest source)
 git+https://github.com/tencent-ailab/IP-Adapter.git
