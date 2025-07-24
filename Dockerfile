@@ -1,6 +1,6 @@
 # Dockerfile
 
-# ✅ Using a newer, available PyTorch 2.3 base image from Runpod
+# Using a stable and recent PyTorch 2.3 base image from Runpod
 FROM runpod/pytorch:2.3.0-py3.10-cuda12.1.1-devel-20240606
 
 WORKDIR /app
