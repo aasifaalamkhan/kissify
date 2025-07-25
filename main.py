@@ -28,7 +28,7 @@ RP_DEBUG = os.getenv("RP_DEBUG", "False").lower() == "true"
 if RP_DEBUG:
     print("✨ Debug mode is ENABLED.", flush=True)
 
-# --- Action Item: Log diffusers version for reproducibility ---
+# --- Log diffusers version for reproducibility ---
 print(f"Diffusers version: {diffusers.__version__}", flush=True)
 
 # Optimize cuDNN for consistent input shapes (like image sizes)
@@ -41,7 +41,7 @@ openpose_detector = None
 midas_detector = None
 image_processor = None
 
-# --- ADDED: Thread-safe lazy-loading lock ---
+# --- Thread-safe lazy-loading lock ---
 model_load_lock = Lock()
 
 # Set Hugging Face cache directory (important if pre-fetching during build)
@@ -71,7 +71,6 @@ def upload_to_catbox(filepath: str, max_retries: int = 3, initial_delay: int = 5
                 response = requests.post('https://litterbox.catbox.moe/resources/internals/api.php', files=files, data=data, timeout=60)
                 response.raise_for_status() # Raises an HTTPError for bad responses (4xx or 5xx)
                 
-                # --- FIX: More robust check for successful URL ---
                 if "https://" in response.text: # Check if "https://" exists anywhere in the response
                     print(f"✅ Upload successful. URL: {response.text}", flush=True)
                     return response.text
@@ -132,7 +131,7 @@ def generate_video(job: dict) -> dict:
     print(f"📥 Job received. Processing job ID: {job_id}", flush=True)
     global pipe, image_encoder, openpose_detector, midas_detector, image_processor
 
-    # --- ADDED: Thread-safe lazy-loading ---
+    # --- Thread-safe lazy-loading ---
     with model_load_lock:
         if pipe is None:
             print("⏳ Models not loaded. Beginning model loading process...", flush=True)
@@ -204,7 +203,7 @@ def generate_video(job: dict) -> dict:
                 pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
                 print("  Scheduler set.", flush=True)
                 
-                # --- FIX: Call enable_model_cpu_offload safely ---
+                # --- Enable model CPU offload (relies on 'accelerate' package) ---
                 if hasattr(pipe, "enable_model_cpu_offload"):
                     print("  Enabling model CPU offload...", flush=True)
                     pipe.enable_model_cpu_offload()
@@ -213,48 +212,33 @@ def generate_video(job: dict) -> dict:
                 else:
                     print("  pipe.enable_model_cpu_offload() not found or not applicable.", flush=True)
 
-                # --- CRITICAL FIX: Proper IP-Adapter integration with the pipeline ---
+                # --- IP-Adapter integration ---
                 # Load CLIP components
                 print(f"  Loading CLIP Image Encoder from {clip_model_id}...", flush=True)
                 image_encoder = CLIPVisionModelWithProjection.from_pretrained(
                     clip_model_id, torch_dtype=torch.float16
-                ) # Loaded on CPU initially, will be explicitly moved to pipe.device below.
+                )
                 print(f"  Loading CLIP Image Processor from {clip_model_id}...", flush=True)
-                image_processor = CLIPImageProcessor.from_pretrained(clip_model_id) # Needed for pre-processing input image
+                image_processor = CLIPImageProcessor.from_pretrained(clip_model_id)
 
-                # --- CRITICAL FIX: Load IP-Adapter using correct subfolder and weight_name (passing pretrained_model_name_or_path positionally) ---
+                # Load IP-Adapter weights
                 print(f"  Loading IP-Adapter weights: {ip_adapter_repo_id} (subfolder: {ip_adapter_model_subfolder}, filename: {ip_adapter_weight_filename})...", flush=True)
                 pipe.load_ip_adapter(
-                    ip_adapter_repo_id, # Passed positionally as 'pretrained_model_name_or_path'
-                    subfolder=ip_adapter_model_subfolder,  # Tells it to look inside the 'models' directory
-                    weight_name=ip_adapter_weight_filename, # The exact .bin file name within 'models'
+                    ip_adapter_repo_id,
+                    subfolder=ip_adapter_model_subfolder,
+                    weight_name=ip_adapter_weight_filename,
                     image_encoder=image_encoder # Pass the pre-loaded image_encoder
                 )
 
-                # ✅ CRITICAL FIX: Removed the problematic line causing AttributeError.
-                # The pipeline's enable_model_cpu_offload and load_ip_adapter methods,
-                # combined with passing ip_adapter_image in the pipe() call,
-                # correctly handle device placement. No manual intervention needed here.
-                # if pipe.image_proj_model.image_encoder.device != pipe.device:
-                #     pipe.image_proj_model.image_encoder.to(pipe.device)
-                
-                # Use .half() consistently on the entire pipeline for float16 operations
-                # When enable_model_cpu_offload is used, the .to("cuda").half() is applied
-                # dynamically to sub-modules as they are moved to GPU for computation.
-                # Applying it here on the whole pipeline can interfere with offloading
-                # if you intend for models to truly be on CPU when idle.
-                # It's best to rely on enable_model_cpu_offload for device management.
-                # If you absolutely want everything on GPU always, remove enable_model_cpu_offload.
-                # Otherwise, this line should be removed or commented out.
-                # pipe.to("cuda").half() # <-- REMOVED this line as it can conflict with offload
-
+                # Note: With enable_model_cpu_offload, device management for IP-Adapter's
+                # image encoder (and other components) is handled internally by the pipeline
+                # when `ip_adapter_image` is passed during inference. No manual .to(device) calls needed.
 
                 print("✅ All models loaded successfully to GPU (or offloaded).", flush=True)
 
-                # Log final device for sanity check
-                # Using pipe.device is generally more reliable when offloading is active.
-                print("DEBUG: Pipe device (after all setup):", pipe.device, flush=True)
-
+                # Log final device for sanity check (will often show 'cpu' if offload is active)
+                if RP_DEBUG:
+                    print("DEBUG: Pipe device (after all setup):", pipe.device, flush=True)
 
                 # Initial cleanup after model loading
                 gc.collect()
@@ -308,7 +292,7 @@ def generate_video(job: dict) -> dict:
         init_image = Image.open(io.BytesIO(base64.b64decode(base64_image))).convert("RGB")
         print(f"🖼️ Input image dimensions: {init_image.size[0]}x{init_image.size[1]}", flush=True)
         
-        # --- FIX: Add input image size validation ---
+        # --- Add input image size validation ---
         if init_image.size[0] * init_image.size[1] > 1024 * 1024: # Max 1 Megapixel
             return {"error": "Input image too large. Max 1 Megapixel (e.g., 1024x1024) supported."}
 
@@ -320,25 +304,36 @@ def generate_video(job: dict) -> dict:
     # --- Image Preprocessing ---
     print("🔍 Preprocessing input image for model inference...", flush=True)
     try:
-        # --- FIX: Convert PIL image to numpy array for controlnet_aux detectors ---
+        # Convert PIL image to numpy array for controlnet_aux detectors
         np_image = np.array(init_image)
 
         print("  Generating OpenPose conditioning image...", flush=True)
         openpose_image = openpose_detector(np_image) # Use np_image
         if RP_DEBUG:
-            print(f"DEBUG: OpenPose image generated. Size: {openpose_image.size[0]}x{openpose_image.size[1]}", flush=True) # Consistent logging
+            print(f"DEBUG: OpenPose image generated. Type: {type(openpose_image)}, Size: {openpose_image.size[0]}x{openpose_image.size[1]}", flush=True)
+
         print("  Generating Depth conditioning image...", flush=True)
         depth_image = midas_detector(np_image) # Use np_image
+
+        # --- Ensure depth_image is a PIL Image for consistent .size access ---
+        if isinstance(depth_image, np.ndarray):
+            if RP_DEBUG:
+                # Removed .size from numpy array log for clarity
+                print(f"DEBUG: MidasDetector returned numpy array (shape: {depth_image.shape}). Converting to PIL Image.", flush=True)
+            depth_image = Image.fromarray(depth_image)
+        elif not isinstance(depth_image, Image.Image):
+            # If it's neither numpy nor PIL, then it's an unexpected type and should be reported.
+            raise TypeError(f"MidasDetector returned unexpected type: {type(depth_image)}. Expected PIL Image or numpy array.")
+
         if RP_DEBUG:
-            # midas_detector returns a PIL Image, so .size is a tuple like PIL images
-            print(f"DEBUG: Depth image generated. Size: {depth_image.size[0]}x{depth_image.size[1]}", flush=True) # Consistent logging
+            # Now, depth_image is guaranteed to be a PIL Image (or an error was raised)
+            print(f"DEBUG: Depth image generated. Type: {type(depth_image)}, Size: {depth_image.size[0]}x{depth_image.size[1]}", flush=True)
         
         control_images = [openpose_image, depth_image]
 
-        # --- CRITICAL FIX: IP-Adapter scale is set on the pipeline directly ---
+        # --- IP-Adapter scale is set on the pipeline directly ---
         pipe.set_ip_adapter_scale(ip_adapter_scale)
-        # No `cross_attention_kwargs` needed for `ip_adapter_image_embeds` if using pipe.load_ip_adapter and passing `ip_adapter_image`
-        cross_attention_kwargs = {}
+        cross_attention_kwargs = {} # Should be empty or contain other specific kwargs if any
         
         print("🔍 Image preprocessing complete.", flush=True)
 
@@ -351,7 +346,7 @@ def generate_video(job: dict) -> dict:
     if RP_DEBUG:
         print(f"DEBUG: CUDA memory BEFORE inference: {torch.cuda.memory_allocated() / (1024**3):.2f} GB", flush=True)
 
-    # --- ADDED: Autocast for mixed precision inference ---
+    # --- Autocast for mixed precision inference ---
     with torch.cuda.amp.autocast(dtype=torch.float16):
         # --- Video Inference ---
         print("✨ Starting video generation inference...", flush=True)
@@ -364,11 +359,11 @@ def generate_video(job: dict) -> dict:
                 num_inference_steps=20,
                 image=control_images, # ControlNet conditioning images
                 controlnet_conditioning_scale=[openpose_scale, depth_scale], # Scales for each ControlNet
-                # --- CRITICAL FIX: Pass the original init_image to `pipe` for IP-Adapter ---
+                # Pass the original init_image to `pipe` for IP-Adapter
                 # The pipeline's internal methods will handle processing `init_image` with image_processor
                 # and ensuring the resulting tensor is on the correct device.
                 ip_adapter_image=init_image, # Pass original PIL image here for IP-Adapter
-                cross_attention_kwargs=cross_attention_kwargs, # Should be empty or contain other specific kwargs if any
+                cross_attention_kwargs=cross_attention_kwargs,
                 height=height,
                 width=width
             )
@@ -399,7 +394,7 @@ def generate_video(job: dict) -> dict:
         video_path = os.path.join(tmpdir, "kissify_video.mp4")
         thumbnail_path = os.path.join(tmpdir, "kissify_thumbnail.jpg")
         try:
-            # --- CRITICAL FIX: Use generated_frames for export and thumbnail ---
+            # Use generated_frames for export and thumbnail
             export_to_video(generated_frames, video_path, fps=fps)
             print(f"📼 Video exported to {video_path} with {fps} FPS.", flush=True)
 
@@ -423,7 +418,7 @@ def generate_video(job: dict) -> dict:
         torch.cuda.empty_cache()
         if RP_DEBUG:
             print(f"DEBUG: CUDA memory after video export and cleanup: {torch.cuda.memory_allocated() / (1024**3):.2f} GB", flush=True)
-            # --- ADDED: CUDA max memory allocated report ---
+            # CUDA max memory allocated report
             print(f"DEBUG: CUDA max memory allocated: {torch.cuda.max_memory_allocated() / (1024**3):.2f} GB", flush=True)
 
         print("🚀 Uploading generated video to Catbox...", flush=True)
