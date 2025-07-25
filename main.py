@@ -7,19 +7,19 @@ import base64
 import requests
 import tempfile
 import numpy as np
-import gc # Import garbage collection
-import time # Import time module for sleep
+import gc  # Import garbage collection
+import time  # Import time module for sleep
 
 from threading import Thread, Lock
 from flask import Flask
 
 from PIL import Image
-import diffusers # Import diffusers directly to access __version__
+import diffusers  # Import diffusers directly to access __version__
 from diffusers import AnimateDiffPipeline, MotionAdapter, DDIMScheduler, ControlNetModel
 from diffusers.utils import export_to_video
 from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
 from controlnet_aux import OpenposeDetector, MidasDetector
-from huggingface_hub import HfFolder, hf_hub_download
+from huggingface_hub import HfFolder, hf_hub_download, login as hf_login # Alias login to avoid conflict if any
 
 print("✅ main.py started: Initializing script execution.", flush=True)
 
@@ -37,9 +37,12 @@ torch.backends.cudnn.benchmark = True
 # --- Globals for Lazy-Loading Models ---
 pipe = None
 image_encoder = None
+# image_processor is loaded but not explicitly used by our code; pipeline handles it internally.
+# Keeping it for clarity as it's part of the IP-Adapter setup, but removed from globals if unused elsewhere.
+# openpose_detector and midas_detector are still globals as they are called directly
 openpose_detector = None
 midas_detector = None
-image_processor = None
+# image_processor = None # Removed from globals as it's not directly accessed after initialization
 
 # --- Thread-safe lazy-loading lock ---
 model_load_lock = Lock()
@@ -67,26 +70,29 @@ def upload_to_catbox(filepath: str, max_retries: int = 3, initial_delay: int = 5
         try:
             with open(filepath, 'rb') as f:
                 files = {'fileToUpload': (os.path.basename(filepath), f)}
-                data = {'reqtype': 'fileupload', 'userhash': ''} # userhash can be empty
+                data = {'reqtype': 'fileupload', 'userhash': ''}  # userhash can be empty
                 response = requests.post('https://litterbox.catbox.moe/resources/internals/api.php', files=files, data=data, timeout=60)
-                response.raise_for_status() # Raises an HTTPError for bad responses (4xx or 5xx)
-                
-                if "https://" in response.text: # Check if "https://" exists anywhere in the response
+                response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
+
+                # More robust check: Catbox returns the URL directly on success, nothing else.
+                # If it's not a URL, it's likely an error message.
+                if response.text.startswith("https://") and len(response.text.strip()) > len("https://"):
                     print(f"✅ Upload successful. URL: {response.text}", flush=True)
-                    return response.text
+                    return response.text.strip() # .strip() to remove any trailing whitespace/newlines
                 else:
-                    print(f"❌ Catbox upload returned unexpected response: {response.text}", flush=True)
+                    print(f"❌ Catbox upload returned unexpected response: '{response.text.strip()}'. Retry {retries + 1}/{max_retries}...", flush=True)
         except requests.exceptions.Timeout:
             print(f"❌ Catbox upload timed out. Retry {retries + 1}/{max_retries}...", flush=True)
         except requests.exceptions.RequestException as e:
-            print(f"❌ Network or HTTP error during Catbox upload: {e}. Retry {retries + 1}/{max_retries}...", flush=True)
-            print(f"Response content (if any): {response.text if 'response' in locals() else 'N/A'}", flush=True)
+            # Capture response text even on RequestException if response was received
+            response_content = response.text if 'response' in locals() and response.text else 'N/A'
+            print(f"❌ Network or HTTP error during Catbox upload: {e}. Response: '{response_content.strip()}'. Retry {retries + 1}/{max_retries}...", flush=True)
         except Exception as e:
             print(f"❌ Unexpected error during Catbox upload: {traceback.format_exc()}. Retry {retries + 1}/{max_retries}...", flush=True)
 
         retries += 1
         if retries < max_retries:
-            sleep_time = initial_delay * (2 ** (retries - 1)) # Exponential backoff
+            sleep_time = initial_delay * (2 ** (retries - 1))  # Exponential backoff
             print(f"Waiting {sleep_time} seconds before retrying...", flush=True)
             time.sleep(sleep_time)
             
@@ -111,6 +117,9 @@ def run_healthcheck_server():
 
     try:
         print("Starting Flask health check server on 0.0.0.0:3000...", flush=True)
+        # Use a simpler app.run for threads, potentially disable threaded=True if issues arise
+        # or use a more robust WSGI server like gunicorn for production.
+        # For simple health checks in a threaded context, this is usually fine.
         app.run(host="0.0.0.0", port=3000, debug=False, use_reloader=False)
         print("Health check server thread finished running Flask app (should not happen if app.run blocks).", flush=True)
     except Exception as e:
@@ -129,14 +138,14 @@ def generate_video(job: dict) -> dict:
     """
     job_id = job.get('id', 'N/A')
     print(f"📥 Job received. Processing job ID: {job_id}", flush=True)
-    global pipe, image_encoder, openpose_detector, midas_detector, image_processor
+    global pipe, image_encoder, openpose_detector, midas_detector # image_processor removed from globals
 
     # --- Thread-safe lazy-loading ---
     with model_load_lock:
         if pipe is None:
             print("⏳ Models not loaded. Beginning model loading process...", flush=True)
             print("Waiting 5 seconds for network to stabilize...", flush=True)
-            time.sleep(5)
+            time.sleep(5) # Give some time for network to settle, especially on cold starts
             print("Resuming model loading...", flush=True)
 
             try:
@@ -149,8 +158,7 @@ def generate_video(job: dict) -> dict:
                 HUGGING_FACE_TOKEN = os.getenv("HUGGING_FACE_HUB_TOKEN") or HfFolder.get_token()
                 if HUGGING_FACE_TOKEN:
                     print("🔐 Hugging Face token detected.", flush=True)
-                    from huggingface_hub import login
-                    login(token=HUGGING_FACE_TOKEN, add_to_git_credential=False)
+                    hf_login(token=HUGGING_FACE_TOKEN, add_to_git_credential=False)
                 else:
                     print("⚠️ Hugging Face token not found. Downloads for gated models may fail. "
                           "Set HUGGING_FACE_HUB_TOKEN environment variable or login using `huggingface_hub.login()`.", flush=True)
@@ -169,7 +177,13 @@ def generate_video(job: dict) -> dict:
 
                 controlnet_openpose_id = "lllyasviel/control_v11p_sd15_openpose"
                 controlnet_depth_id = "lllyasviel/control_v11f1p_sd15_depth"
-                controlnet_aux_id = "lllyasviel/ControlNet"
+                
+                # For controlnet_aux, it's common to initialize without a pretrained path
+                # if the detector itself doesn't pull external weights from that specific path,
+                # or use a local path if weights were pre-downloaded.
+                # However, if 'from_pretrained' with a HF ID *is* required, keep it.
+                # For robustness, we'll keep the original behavior assuming it's intended.
+                controlnet_aux_repo_id = "lllyasviel/ControlNet" # Used for OpenposeDetector and MidasDetector
 
                 print(f"  Loading OpenPose ControlNet from {controlnet_openpose_id}...", flush=True)
                 openpose_controlnet = ControlNetModel.from_pretrained(
@@ -181,10 +195,12 @@ def generate_video(job: dict) -> dict:
                 )
                 print("  ControlNet models loaded.", flush=True)
 
-                print(f"  Loading OpenposeDetector from {controlnet_aux_id}...", flush=True)
-                openpose_detector = OpenposeDetector.from_pretrained(controlnet_aux_id)
-                print(f"  Loading MidasDetector from {controlnet_aux_id}...", flush=True)
-                midas_detector = MidasDetector.from_pretrained(controlnet_aux_id)
+                print(f"  Loading OpenposeDetector from {controlnet_aux_repo_id}...", flush=True)
+                # Ensure the detector is also moved to GPU if it supports it, though usually CPU is fine for these.
+                # The .to("cuda") is not typically needed for these detectors as they are small CPU operations.
+                openpose_detector = OpenposeDetector.from_pretrained(controlnet_aux_repo_id)
+                print(f"  Loading MidasDetector from {controlnet_aux_repo_id}...", flush=True)
+                midas_detector = MidasDetector.from_pretrained(controlnet_aux_repo_id)
                 print("  ControlNet auxiliary detectors loaded.", flush=True)
 
                 print(f"  Loading MotionAdapter from {motion_module_id}...", flush=True)
@@ -195,7 +211,7 @@ def generate_video(job: dict) -> dict:
                 pipe = AnimateDiffPipeline.from_pretrained(
                     base_model_id,
                     motion_adapter=adapter,
-                    controlnet=[openpose_controlnet, depth_controlnet],
+                    controlnet=[openpose_controlnet, depth_controlnet], # Ensure order matches control_images later
                     torch_dtype=torch.float16,
                     use_safetensors=True
                 )
@@ -203,23 +219,24 @@ def generate_video(job: dict) -> dict:
                 pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
                 print("  Scheduler set.", flush=True)
                 
-                # --- Enable model CPU offload (relies on 'accelerate' package) ---
-                if hasattr(pipe, "enable_model_cpu_offload"):
-                    print("  Enabling model CPU offload...", flush=True)
-                    pipe.enable_model_cpu_offload()
-                    if RP_DEBUG:
-                        print("DEBUG: pipe.device (after offload):", pipe.device, flush=True)
-                else:
-                    print("  pipe.enable_model_cpu_offload() not found or not applicable.", flush=True)
-
                 # --- IP-Adapter integration ---
                 # Load CLIP components
                 print(f"  Loading CLIP Image Encoder from {clip_model_id}...", flush=True)
                 image_encoder = CLIPVisionModelWithProjection.from_pretrained(
                     clip_model_id, torch_dtype=torch.float16
                 )
+                # FIX: Explicitly move CLIP Image Encoder to GPU and half precision directly and keep it there
+                if torch.cuda.is_available():
+                    image_encoder.to("cuda").half()
+                    if RP_DEBUG:
+                        print(f"DEBUG: CLIP Image Encoder moved to {image_encoder.device} and half precision.", flush=True)
+                else:
+                    print("DEBUG: CUDA not available, CLIP Image Encoder remains on CPU.", flush=True)
+
+                # image_processor is typically handled internally by the pipeline's IP-Adapter integration
+                # It's loaded here to ensure its existence for the pipeline setup, but not stored as a global.
                 print(f"  Loading CLIP Image Processor from {clip_model_id}...", flush=True)
-                image_processor = CLIPImageProcessor.from_pretrained(clip_model_id)
+                _ = CLIPImageProcessor.from_pretrained(clip_model_id) # Assign to _ as it's not directly used later
 
                 # Load IP-Adapter weights
                 print(f"  Loading IP-Adapter weights: {ip_adapter_repo_id} (subfolder: {ip_adapter_model_subfolder}, filename: {ip_adapter_weight_filename})...", flush=True)
@@ -230,15 +247,20 @@ def generate_video(job: dict) -> dict:
                     image_encoder=image_encoder # Pass the pre-loaded image_encoder
                 )
 
-                # Note: With enable_model_cpu_offload, device management for IP-Adapter's
-                # image encoder (and other components) is handled internally by the pipeline
-                # when `ip_adapter_image` is passed during inference. No manual .to(device) calls needed.
+                # FIX: Move entire pipeline to GPU and half precision after all components are loaded
+                # This ensures all integrated modules, including IP-Adapter's, are on GPU and ready.
+                if torch.cuda.is_available():
+                    pipe.to("cuda").half()
+                    if RP_DEBUG:
+                        # Checking individual components for device is more reliable than pipe.device after .to()
+                        print(f"DEBUG: Pipeline UNet device: {pipe.unet.device}, VAE device: {pipe.vae.device}, Text Encoder device: {pipe.text_encoder.device}", flush=True)
+                        if pipe.ip_adapter: # Check if ip_adapter is loaded and has a device
+                            print(f"DEBUG: IP-Adapter device: {pipe.ip_adapter.device}", flush=True)
+                        print(f"DEBUG: Entire pipeline moved to GPU and half precision.", flush=True)
+                else:
+                    print("DEBUG: CUDA not available, pipeline remains on CPU.", flush=True)
 
-                print("✅ All models loaded successfully to GPU (or offloaded).", flush=True)
-
-                # Log final device for sanity check (will often show 'cpu' if offload is active)
-                if RP_DEBUG:
-                    print("DEBUG: Pipe device (after all setup):", pipe.device, flush=True)
+                print("✅ All models loaded successfully to GPU.", flush=True)
 
                 # Initial cleanup after model loading
                 gc.collect()
@@ -267,6 +289,7 @@ def generate_video(job: dict) -> dict:
     num_frames = int(job_input.get('num_frames', 16))
     fps = int(job_input.get('fps', 8))
 
+    # Clamp values to reasonable ranges
     height = max(256, min(height, 1024))
     width = max(256, min(width, 1024))
     num_frames = max(8, min(num_frames, 32))
@@ -292,8 +315,8 @@ def generate_video(job: dict) -> dict:
         init_image = Image.open(io.BytesIO(base64.b64decode(base64_image))).convert("RGB")
         print(f"🖼️ Input image dimensions: {init_image.size[0]}x{init_image.size[1]}", flush=True)
         
-        # --- Add input image size validation ---
-        if init_image.size[0] * init_image.size[1] > 1024 * 1024: # Max 1 Megapixel
+        # Add input image size validation
+        if init_image.size[0] * init_image.size[1] > 1024 * 1024:  # Max 1 Megapixel
             return {"error": "Input image too large. Max 1 Megapixel (e.g., 1024x1024) supported."}
 
     except Exception as e:
@@ -315,10 +338,9 @@ def generate_video(job: dict) -> dict:
         print("  Generating Depth conditioning image...", flush=True)
         depth_image = midas_detector(np_image) # Use np_image
 
-        # --- Ensure depth_image is a PIL Image for consistent .size access ---
+        # Ensure depth_image is a PIL Image for consistent .size access and pipeline input
         if isinstance(depth_image, np.ndarray):
             if RP_DEBUG:
-                # Removed .size from numpy array log for clarity
                 print(f"DEBUG: MidasDetector returned numpy array (shape: {depth_image.shape}). Converting to PIL Image.", flush=True)
             depth_image = Image.fromarray(depth_image)
         elif not isinstance(depth_image, Image.Image):
@@ -326,12 +348,11 @@ def generate_video(job: dict) -> dict:
             raise TypeError(f"MidasDetector returned unexpected type: {type(depth_image)}. Expected PIL Image or numpy array.")
 
         if RP_DEBUG:
-            # Now, depth_image is guaranteed to be a PIL Image (or an error was raised)
             print(f"DEBUG: Depth image generated. Type: {type(depth_image)}, Size: {depth_image.size[0]}x{depth_image.size[1]}", flush=True)
-        
-        control_images = [openpose_image, depth_image]
+            
+        control_images = [openpose_image, depth_image] # Order matches controlnet pipeline initialization
 
-        # --- IP-Adapter scale is set on the pipeline directly ---
+        # IP-Adapter scale is set on the pipeline directly
         pipe.set_ip_adapter_scale(ip_adapter_scale)
         cross_attention_kwargs = {} # Should be empty or contain other specific kwargs if any
         
@@ -358,10 +379,7 @@ def generate_video(job: dict) -> dict:
                 guidance_scale=7.5,
                 num_inference_steps=20,
                 image=control_images, # ControlNet conditioning images
-                controlnet_conditioning_scale=[openpose_scale, depth_scale], # Scales for each ControlNet
-                # Pass the original init_image to `pipe` for IP-Adapter
-                # The pipeline's internal methods will handle processing `init_image` with image_processor
-                # and ensuring the resulting tensor is on the correct device.
+                controlnet_conditioning_scale=[openpose_scale, depth_scale], # Scales for each ControlNet, order must match 'controlnet' list in pipeline init
                 ip_adapter_image=init_image, # Pass original PIL image here for IP-Adapter
                 cross_attention_kwargs=cross_attention_kwargs,
                 height=height,
@@ -422,6 +440,7 @@ def generate_video(job: dict) -> dict:
             print(f"DEBUG: CUDA max memory allocated: {torch.cuda.max_memory_allocated() / (1024**3):.2f} GB", flush=True)
 
         print("🚀 Uploading generated video to Catbox...", flush=True)
+        # Removed redundant initial_delay parameter, relying on default
         video_url = upload_to_catbox(filepath=video_path, max_retries=5)
         if "Error" in video_url:
             print(f"❌ Video upload failed: {video_url}", flush=True)
@@ -430,6 +449,7 @@ def generate_video(job: dict) -> dict:
         thumbnail_url = None
         if thumbnail_path:
             print("🚀 Uploading generated thumbnail to Catbox...", flush=True)
+            # Removed redundant initial_delay parameter, relying on default
             thumbnail_url = upload_to_catbox(filepath=thumbnail_path, max_retries=5)
             if "Error" in thumbnail_url:
                 print(f"❌ Thumbnail upload failed: {thumbnail_url}", flush=True)
