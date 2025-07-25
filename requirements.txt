@@ -38,7 +38,7 @@ git+https://github.com/tencent-ailab/IP-Adapter.git@main#egg=ip_adapter
 
 # Pin huggingface_hub to a compatible version for diffusers==0.27.2 and transformers==4.38.2
 # It's good to pin this explicitly.
-huggingface_hub==0.20.3
+huggingface_hub>=0.23.0
 
 # Added: protobuf is a common dependency that can cause issues if not pinned
 # or if too new/old for other libraries.
