@@ -1,5 +1,3 @@
-# main.py debug rebuild
-
 import runpod
 import torch
 import traceback
@@ -10,6 +8,7 @@ import requests
 import tempfile
 import numpy as np
 import gc # Import garbage collection
+import time # Import time module for sleep
 
 from threading import Thread
 from flask import Flask
@@ -157,13 +156,17 @@ def generate_video(job: dict) -> dict:
     # Lazy-load models on the first job
     if pipe is None:
         print("⏳ Models not loaded. Beginning model loading process...", flush=True)
+        # Add a delay to ensure network is fully ready before model downloads
+        print("Waiting 5 seconds for network to stabilize...", flush=True)
+        time.sleep(5)
+        print("Resuming model loading...", flush=True)
+
         try:
             if not torch.cuda.is_available():
                 raise RuntimeError("CUDA is not available! A GPU is absolutely required for this application.")
             print(f"CUDA is available. Device count: {torch.cuda.device_count()}", flush=True)
             print(f"Current CUDA device: {torch.cuda.current_device()}", flush=True)
             print(f"CUDA device name: {torch.cuda.get_device_name(0)}", flush=True)
-
 
             # Retrieve Hugging Face token from environment variables or HfFolder
             HUGGING_FACE_TOKEN = os.getenv("HUGGING_FACE_HUB_TOKEN") or HfFolder.get_token()
@@ -185,66 +188,65 @@ def generate_video(job: dict) -> dict:
             controlnet_aux_id = "lllyasviel/ControlNet" # For OpenposeDetector and MidasDetector
 
             # Load ControlNet models
-            print(f"  Loading OpenPose ControlNet from {controlnet_openpose_id}...", flush=True)
+            print(f"  Loading OpenPose ControlNet from {controlnet_openpose_id}...", flush=True)
             openpose_controlnet = ControlNetModel.from_pretrained(
                 controlnet_openpose_id, torch_dtype=torch.float16, use_safetensors=True
             )
-            print(f"  Loading Depth ControlNet from {controlnet_depth_id}...", flush=True)
+            print(f"  Loading Depth ControlNet from {controlnet_depth_id}...", flush=True)
             depth_controlnet = ControlNetModel.from_pretrained(
                 controlnet_depth_id, torch_dtype=torch.float16, use_safetensors=True
             )
-            print("  ControlNet models loaded.", flush=True)
+            print("  ControlNet models loaded.", flush=True)
 
             # Load ControlNet auxiliary detectors
-            print(f"  Loading OpenposeDetector from {controlnet_aux_id}...", flush=True)
+            print(f"  Loading OpenposeDetector from {controlnet_aux_id}...", flush=True)
             openpose_detector = OpenposeDetector.from_pretrained(
                 controlnet_aux_id
             )
-            print(f"  Loading MidasDetector from {controlnet_aux_id}...", flush=True)
+            print(f"  Loading MidasDetector from {controlnet_aux_id}...", flush=True)
             midas_detector = MidasDetector.from_pretrained(
                 controlnet_aux_id
             )
-            print("  ControlNet auxiliary detectors loaded.", flush=True)
+            print("  ControlNet auxiliary detectors loaded.", flush=True)
 
             # Load AnimateDiff pipeline
-            print(f"  Loading AnimateDiff pipeline from {base_model_id}...", flush=True)
+            print(f"  Loading AnimateDiff pipeline from {base_model_id}...", flush=True)
             pipe = AnimateDiffPipeline.from_pretrained(
                 base_model_id,
                 controlnet=[openpose_controlnet, depth_controlnet],
                 torch_dtype=torch.float16,
                 use_safetensors=True # Ensure using safetensors if available
             )
-            print("  AnimateDiff pipeline loaded. Loading scheduler and motion module...", flush=True)
+            print("  AnimateDiff pipeline loaded. Loading scheduler and motion module...", flush=True)
             pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
             pipe.load_motion_module(
                 motion_module_id, unet_additional_kwargs={"use_inflated_groupnorm": True}
             )
-            print("  Scheduler and motion module loaded. Enabling model CPU offload...", flush=True)
+            print("  Scheduler and motion module loaded. Enabling model CPU offload...", flush=True)
             # Offload models to CPU when not in use to save GPU memory
             pipe.enable_model_cpu_offload()
             if RP_DEBUG:
                 print("DEBUG: pipe.device (after offload):", pipe.device, flush=True)
 
             # Load IP-Adapter components
-            print(f"  Loading IP-Adapter components from {ip_adapter_repo_id}...", flush=True)
+            print(f"  Loading IP-Adapter components from {ip_adapter_repo_id}...", flush=True)
             image_encoder = CLIPVisionModelWithProjection.from_pretrained(
                 ip_adapter_repo_id, subfolder="models/image_encoder", torch_dtype=torch.float16
             ).to("cuda") # Ensure image encoder is on CUDA
             image_processor = CLIPImageProcessor.from_pretrained(
                 ip_adapter_repo_id, subfolder="models/image_encoder"
             )
-            print("  Downloading IP-Adapter weights...", flush=True)
+            print("  Downloading IP-Adapter weights...", flush=True)
             ip_adapter_path = hf_hub_download(
                 repo_id=ip_adapter_repo_id, filename="ip-adapter_sd15.bin"
             )
-            print(f"  Loading IP-Adapter weights from {ip_adapter_path}...", flush=True)
+            print(f"  Loading IP-Adapter weights from {ip_adapter_path}...", flush=True)
             ip_adapter_weights = torch.load(ip_adapter_path, map_location="cpu")
             # Filter the state_dict to only include keys starting with "image_proj" and "ip_adapter"
             # This is a common practice when loading specific components
             filtered_weights = {k: v for k, v in ip_adapter_weights.items() if k.startswith(("image_proj", "ip_adapter"))}
             image_proj_model = IPAdapterImageProj(filtered_weights).to("cuda") # Ensure projection model is on CUDA
-            print("  IP-Adapter components loaded.", flush=True)
-
+            print("  IP-Adapter components loaded.", flush=True)
 
             print("✅ All models loaded successfully to GPU.", flush=True)
 
@@ -253,7 +255,6 @@ def generate_video(job: dict) -> dict:
             torch.cuda.empty_cache()
             if RP_DEBUG:
                 print(f"DEBUG: CUDA memory after initial load: {torch.cuda.memory_allocated() / (1024**3):.2f} GB", flush=True)
-
 
         except RuntimeError as e:
             error_message = f"❌ CUDA or Model Initialization Critical Error: {e}\n{traceback.format_exc()}"
@@ -305,7 +306,7 @@ def generate_video(job: dict) -> dict:
     print("🔍 Preprocessing input image for model inference...", flush=True)
     try:
         # Process image for CLIP (IP-Adapter)
-        print("  Processing image for CLIP (IP-Adapter)...", flush=True)
+        print("  Processing image for CLIP (IP-Adapter)...", flush=True)
         processed_image = image_processor(images=init_image, return_tensors="pt").pixel_values.to("cuda", dtype=torch.float16)
         clip_features = image_encoder(processed_image).image_embeds
         image_embeds = image_proj_model(clip_features)
@@ -314,11 +315,11 @@ def generate_video(job: dict) -> dict:
             print(f"DEBUG: image_embeds shape: {image_embeds.shape}", flush=True)
 
         # Generate ControlNet conditioning images
-        print("  Generating OpenPose conditioning image...", flush=True)
+        print("  Generating OpenPose conditioning image...", flush=True)
         openpose_image = openpose_detector(init_image)
         if RP_DEBUG:
             print(f"DEBUG: OpenPose image generated. Size: {openpose_image.size}", flush=True)
-        print("  Generating Depth conditioning image...", flush=True)
+        print("  Generating Depth conditioning image...", flush=True)
         depth_image = midas_detector(init_image)
         if RP_DEBUG:
             print(f"DEBUG: Depth image generated. Size: {depth_image.size}", flush=True)
@@ -338,7 +339,6 @@ def generate_video(job: dict) -> dict:
     torch.cuda.empty_cache()
     if RP_DEBUG:
         print(f"DEBUG: CUDA memory before inference: {torch.cuda.memory_allocated() / (1024**3):.2f} GB", flush=True)
-
 
     # --- Video Inference ---
     print("✨ Starting video generation inference...", flush=True)
@@ -371,12 +371,14 @@ def generate_video(job: dict) -> dict:
 
     # Clear memory after inference
     del output
-    del frames # This might be large, free it if possible
+    # frames is a list of PIL Images, which can be large. Explicitly clear if possible.
+    # Note: `del frames` only removes the reference, GC will clean up later.
+    # If `frames` is a large list, consider processing it in chunks or directly writing to video.
+    # For now, relying on Python's GC and empty_cache.
     gc.collect()
     torch.cuda.empty_cache()
     if RP_DEBUG:
         print(f"DEBUG: CUDA memory after inference: {torch.cuda.memory_allocated() / (1024**3):.2f} GB", flush=True)
-
 
     # --- Export and Upload Video ---
     print("📼 Exporting video and preparing for upload...", flush=True)
