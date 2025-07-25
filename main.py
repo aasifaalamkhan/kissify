@@ -36,7 +36,7 @@ class IPAdapterImageProj(torch.nn.Module):
     A simple linear layer to project image embeddings for the IP-Adapter.
     """
     def __init__(self, state_dict):
-        super().__init__()
+        super()._init_()
         # Initialize a linear layer based on the shapes found in the state_dict
         # Ensure dimensions match what the state_dict expects
         try:
@@ -80,39 +80,52 @@ os.environ['HF_HOME'] = os.getenv('HF_HOME', '/app/hf_cache')
 print(f"Hugging Face cache directory set to: {os.environ['HF_HOME']}", flush=True)
 
 # --- File Upload Utility ---
-def upload_to_catbox(filepath: str) -> str:
+def upload_to_catbox(filepath: str, max_retries: int = 3, initial_delay: int = 5) -> str:
     """
-    Uploads a file to Catbox.moe for temporary hosting.
+    Uploads a file to Catbox.moe for temporary hosting with retry logic.
 
     Args:
         filepath (str): The path to the file to upload.
+        max_retries (int): Maximum number of retries for the upload.
+        initial_delay (int): Initial delay in seconds before the first retry.
 
     Returns:
         str: The URL of the uploaded file or an error message.
     """
     print(f"📤 Attempting to upload {filepath} to Catbox...", flush=True)
-    try:
-        with open(filepath, 'rb') as f:
-            files = {'fileToUpload': (os.path.basename(filepath), f)}
-            data = {'reqtype': 'fileupload', 'userhash': ''} # userhash can be empty
-            response = requests.post('https://litterbox.catbox.moe/resources/internals/api.php', files=files, data=data, timeout=60)
-            response.raise_for_status() # Raises an HTTPError for bad responses (4xx or 5xx)
-            if response.text.startswith("https://"):
-                print(f"✅ Upload successful. URL: {response.text}", flush=True)
-                return response.text
-            else:
-                print(f"❌ Catbox upload returned unexpected response: {response.text}", flush=True)
-                return f"Error uploading: Catbox returned unexpected response: {response.text}"
-    except requests.exceptions.Timeout:
-        print(f"❌ Catbox upload timed out after 60 seconds.", flush=True)
-        return "Error uploading: Catbox upload timed out."
-    except requests.exceptions.RequestException as e:
-        print(f"❌ Network or HTTP error during Catbox upload: {e}", flush=True)
-        print(f"Response content (if any): {response.text if 'response' in locals() else 'N/A'}", flush=True)
-        return f"Error uploading: Network or HTTP issue: {e}"
-    except Exception as e:
-        print(f"❌ Unexpected error uploading to Catbox: {traceback.format_exc()}", flush=True)
-        return f"Error uploading: {str(e)}"
+    retries = 0
+    while retries < max_retries:
+        try:
+            with open(filepath, 'rb') as f:
+                files = {'fileToUpload': (os.path.basename(filepath), f)}
+                data = {'reqtype': 'fileupload', 'userhash': ''} # userhash can be empty
+                response = requests.post('https://litterbox.catbox.moe/resources/internals/api.php', files=files, data=data, timeout=60)
+                response.raise_for_status() # Raises an HTTPError for bad responses (4xx or 5xx)
+                if response.text.startswith("https://"):
+                    print(f"✅ Upload successful. URL: {response.text}", flush=True)
+                    return response.text
+                else:
+                    print(f"❌ Catbox upload returned unexpected response: {response.text}", flush=True)
+                    # If it's an unexpected response but not an HTTP error, it might be a Catbox-specific issue.
+                    # We might still retry if it's not explicitly a successful URL.
+                    pass
+        except requests.exceptions.Timeout:
+            print(f"❌ Catbox upload timed out. Retry {retries + 1}/{max_retries}...", flush=True)
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Network or HTTP error during Catbox upload: {e}. Retry {retries + 1}/{max_retries}...", flush=True)
+            print(f"Response content (if any): {response.text if 'response' in locals() else 'N/A'}", flush=True)
+        except Exception as e:
+            print(f"❌ Unexpected error during Catbox upload: {traceback.format_exc()}. Retry {retries + 1}/{max_retries}...", flush=True)
+
+        retries += 1
+        if retries < max_retries:
+            sleep_time = initial_delay * (2 ** (retries - 1)) # Exponential backoff
+            print(f"Waiting {sleep_time} seconds before retrying...", flush=True)
+            time.sleep(sleep_time)
+    
+    final_error_message = f"Error uploading: Failed to upload to Catbox after {max_retries} attempts."
+    print(final_error_message, flush=True)
+    return final_error_message
 
 # --- Health Check Server ---
 def run_healthcheck_server():
@@ -181,13 +194,13 @@ def generate_video(job: dict) -> dict:
 
             # Define model IDs
             base_model_id = "SG161222/Realistic_Vision_V5.1_noVAE"
-            motion_module_id = "guoyww/animatediff-motion-module-v3"
+            motion_module_id = "ByteDance/AnimateDiff-Lightning-T2V" # Updated motion module ID
             ip_adapter_repo_id = "h94/IP-Adapter"
             controlnet_openpose_id = "lllyasviel/control_v11p_sd15_openpose"
             controlnet_depth_id = "lllyasviel/control_v11f1p_sd15_depth"
             controlnet_aux_id = "lllyasviel/ControlNet" # For OpenposeDetector and MidasDetector
 
-            # Load ControlNet models 
+            # Load ControlNet models
             print(f"  Loading OpenPose ControlNet from {controlnet_openpose_id}...", flush=True)
             openpose_controlnet = ControlNetModel.from_pretrained(
                 controlnet_openpose_id, torch_dtype=torch.float16, use_safetensors=True
@@ -198,7 +211,7 @@ def generate_video(job: dict) -> dict:
             )
             print("  ControlNet models loaded.", flush=True)
 
-            # Load ControlNet auxiliary detectors 
+            # Load ControlNet auxiliary detectors
             print(f"  Loading OpenposeDetector from {controlnet_aux_id}...", flush=True)
             openpose_detector = OpenposeDetector.from_pretrained(
                 controlnet_aux_id
@@ -214,7 +227,7 @@ def generate_video(job: dict) -> dict:
             adapter = MotionAdapter.from_pretrained(motion_module_id, torch_dtype=torch.float16)
             print("  MotionAdapter loaded.", flush=True)
 
-            # Load AnimateDiff pipeline 
+            # Load AnimateDiff pipeline
             print(f"  Loading AnimateDiff pipeline from {base_model_id}...", flush=True)
             pipe = AnimateDiffPipeline.from_pretrained(
                 base_model_id,
@@ -226,12 +239,12 @@ def generate_video(job: dict) -> dict:
             print("  AnimateDiff pipeline loaded. Setting scheduler...", flush=True)
             pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
             print("  Scheduler set. Enabling model CPU offload...", flush=True)
-            # Offload models to CPU when not in use to save GPU memory 
+            # Offload models to CPU when not in use to save GPU memory
             pipe.enable_model_cpu_offload()
             if RP_DEBUG:
                 print("DEBUG: pipe.device (after offload):", pipe.device, flush=True)
 
-            # Load IP-Adapter components 
+            # Load IP-Adapter components
             print(f"  Loading IP-Adapter components from {ip_adapter_repo_id}...", flush=True)
             image_encoder = CLIPVisionModelWithProjection.from_pretrained(
                 ip_adapter_repo_id, subfolder="models/image_encoder", torch_dtype=torch.float16
@@ -275,11 +288,20 @@ def generate_video(job: dict) -> dict:
     if RP_DEBUG:
         print(f"DEBUG: Prompt received: '{prompt}'", flush=True)
 
-    # Parameters with default values and validation 
+    # Parameters with default values and validation
+    # Add resolution parameters
+    height = int(job_input.get('height', 512))
+    width = int(job_input.get('width', 512))
     num_frames = int(job_input.get('num_frames', 16))
     fps = int(job_input.get('fps', 8))
 
-    # Ensure scales are within reasonable bounds (0.0 to 2.0, adjusted from 1.5 for more flexibility) 
+    # Clamp parameters to prevent excessive resource usage and OOMs
+    height = max(256, min(height, 1024)) # Example: Min 256, Max 1024
+    width = max(256, min(width, 1024))   # Example: Min 256, Max 1024
+    num_frames = max(8, min(num_frames, 32)) # Example: Min 8, Max 32 frames
+    fps = max(4, min(fps, 15))         # Example: Min 4, Max 15 FPS
+
+    # Ensure scales are within reasonable bounds (0.0 to 2.0, adjusted from 1.5 for more flexibility)
     ip_adapter_scale = float(job_input.get('ip_adapter_scale', 0.7))
     ip_adapter_scale = min(max(ip_adapter_scale, 0.0), 2.0)
     openpose_scale = float(job_input.get('openpose_scale', 1.0))
@@ -288,15 +310,15 @@ def generate_video(job: dict) -> dict:
     depth_scale = min(max(depth_scale, 0.0), 2.0)
 
     if RP_DEBUG:
-        print(f"DEBUG: num_frames={num_frames}, fps={fps}, ip_adapter_scale={ip_adapter_scale}, "
-              f"openpose_scale={openpose_scale}, depth_scale={depth_scale}", flush=True)
+        print(f"DEBUG: resolution={width}x{height}, num_frames={num_frames}, fps={fps}, "
+              f"ip_adapter_scale={ip_adapter_scale}, openpose_scale={openpose_scale}, depth_scale={depth_scale}", flush=True)
 
     if not base64_image:
         print("❌ 'init_image' (base64 encoded) is missing in job input.", flush=True)
         return {"error": "Missing 'init_image' base64 input. Please provide a base64 encoded image."}
 
     try:
-        # Decode base64 image and convert to RGB 
+        # Decode base64 image and convert to RGB
         print("🖼️ Decoding base64 image...", flush=True)
         init_image = Image.open(io.BytesIO(base64.b64decode(base64_image))).convert("RGB")
         print(f"🖼️ Input image dimensions: {init_image.size[0]}x{init_image.size[1]}", flush=True)
@@ -308,7 +330,7 @@ def generate_video(job: dict) -> dict:
     # --- Image Preprocessing ---
     print("🔍 Preprocessing input image for model inference...", flush=True)
     try:
-        # Process image for CLIP (IP-Adapter) 
+        # Process image for CLIP (IP-Adapter)
         print("  Processing image for CLIP (IP-Adapter)...", flush=True)
         processed_image = image_processor(images=init_image, return_tensors="pt").pixel_values.to("cuda", dtype=torch.float16)
         clip_features = image_encoder(processed_image).image_embeds
@@ -317,7 +339,7 @@ def generate_video(job: dict) -> dict:
             print(f"DEBUG: clip_features shape: {clip_features.shape}", flush=True)
             print(f"DEBUG: image_embeds shape: {image_embeds.shape}", flush=True)
 
-        # Generate ControlNet conditioning images 
+        # Generate ControlNet conditioning images
         print("  Generating OpenPose conditioning image...", flush=True)
         openpose_image = openpose_detector(init_image)
         if RP_DEBUG:
@@ -354,7 +376,9 @@ def generate_video(job: dict) -> dict:
             num_inference_steps=20,
             image=control_images, # ControlNet conditioning images
             controlnet_conditioning_scale=[openpose_scale, depth_scale], # Scales for each ControlNet
-            cross_attention_kwargs=cross_attention_kwargs
+            cross_attention_kwargs=cross_attention_kwargs,
+            height=height, # Pass height
+            width=width    # Pass width
         )
         frames = output.frames[0] # Assuming we want the first (and likely only) generated video
         print("✅ Video inference completed.", flush=True)
@@ -396,8 +420,9 @@ def generate_video(job: dict) -> dict:
             return {"error": error_message}
 
         print("🚀 Uploading generated video to Catbox...", flush=True)
-        video_url = upload_to_catbox(filepath=video_path)
-        if "Error" in video_url:
+        # Use retry logic for upload
+        video_url = upload_to_catbox(filepath=video_path, max_retries=5) # Increased retries for robustness
+        if "Error" in video_url: # Check for the "Error" string to indicate failure
             print(f"❌ Video upload failed: {video_url}", flush=True)
             return {"error": video_url}
 
@@ -453,7 +478,9 @@ if __name__ == "__main__":
     #     #             "fps": 8,
     #     #             "ip_adapter_scale": 0.8,
     #     #             "openpose_scale": 1.2,
-    #     #             "depth_scale": 0.6
+    #     #             "depth_scale": 0.6,
+    #     #             "height": 512, # Added for local testing
+    #     #             "width": 512   # Added for local testing
     #     #         }
     #     #     }
     #     #     print("\n--- Starting local test job ---", flush=True)
