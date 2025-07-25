@@ -40,8 +40,8 @@ class IPAdapterImageProj(torch.nn.Module):
         # Initialize a linear layer based on the shapes found in the state_dict
         # Ensure dimensions match what the state_dict expects
         try:
-            input_dim = state_dict["image_proj.weight"].shape[1] # Corrected key based on typical linear layer state_dict
-            output_dim = state_dict["image_proj.weight"].shape[0] # Corrected key
+            input_dim = state_dict["image_proj.weight"].shape[1]
+            output_dim = state_dict["image_proj.weight"].shape[0]
             self.image_proj_model = torch.nn.Linear(input_dim, output_dim)
             self.image_proj_model.load_state_dict({
                 "weight": state_dict["image_proj.weight"],
@@ -187,7 +187,7 @@ def generate_video(job: dict) -> dict:
             controlnet_depth_id = "lllyasviel/control_v11f1p_sd15_depth"
             controlnet_aux_id = "lllyasviel/ControlNet" # For OpenposeDetector and MidasDetector
 
-            # Load ControlNet models
+            # Load ControlNet models 
             print(f"  Loading OpenPose ControlNet from {controlnet_openpose_id}...", flush=True)
             openpose_controlnet = ControlNetModel.from_pretrained(
                 controlnet_openpose_id, torch_dtype=torch.float16, use_safetensors=True
@@ -198,7 +198,7 @@ def generate_video(job: dict) -> dict:
             )
             print("  ControlNet models loaded.", flush=True)
 
-            # Load ControlNet auxiliary detectors
+            # Load ControlNet auxiliary detectors 
             print(f"  Loading OpenposeDetector from {controlnet_aux_id}...", flush=True)
             openpose_detector = OpenposeDetector.from_pretrained(
                 controlnet_aux_id
@@ -209,26 +209,29 @@ def generate_video(job: dict) -> dict:
             )
             print("  ControlNet auxiliary detectors loaded.", flush=True)
 
-            # Load AnimateDiff pipeline
+            # --- FIX: Load MotionAdapter and pass it to AnimateDiffPipeline directly ---
+            print(f"  Loading MotionAdapter from {motion_module_id}...", flush=True)
+            adapter = MotionAdapter.from_pretrained(motion_module_id, torch_dtype=torch.float16)
+            print("  MotionAdapter loaded.", flush=True)
+
+            # Load AnimateDiff pipeline 
             print(f"  Loading AnimateDiff pipeline from {base_model_id}...", flush=True)
             pipe = AnimateDiffPipeline.from_pretrained(
                 base_model_id,
+                motion_adapter=adapter, # Pass the motion adapter here
                 controlnet=[openpose_controlnet, depth_controlnet],
                 torch_dtype=torch.float16,
                 use_safetensors=True # Ensure using safetensors if available
             )
-            print("  AnimateDiff pipeline loaded. Loading scheduler and motion module...", flush=True)
+            print("  AnimateDiff pipeline loaded. Setting scheduler...", flush=True)
             pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
-            pipe.load_motion_module(
-                motion_module_id, unet_additional_kwargs={"use_inflated_groupnorm": True}
-            )
-            print("  Scheduler and motion module loaded. Enabling model CPU offload...", flush=True)
-            # Offload models to CPU when not in use to save GPU memory
+            print("  Scheduler set. Enabling model CPU offload...", flush=True)
+            # Offload models to CPU when not in use to save GPU memory 
             pipe.enable_model_cpu_offload()
             if RP_DEBUG:
                 print("DEBUG: pipe.device (after offload):", pipe.device, flush=True)
 
-            # Load IP-Adapter components
+            # Load IP-Adapter components 
             print(f"  Loading IP-Adapter components from {ip_adapter_repo_id}...", flush=True)
             image_encoder = CLIPVisionModelWithProjection.from_pretrained(
                 ip_adapter_repo_id, subfolder="models/image_encoder", torch_dtype=torch.float16
@@ -272,11 +275,11 @@ def generate_video(job: dict) -> dict:
     if RP_DEBUG:
         print(f"DEBUG: Prompt received: '{prompt}'", flush=True)
 
-    # Parameters with default values and validation
+    # Parameters with default values and validation 
     num_frames = int(job_input.get('num_frames', 16))
     fps = int(job_input.get('fps', 8))
 
-    # Ensure scales are within reasonable bounds (0.0 to 2.0, adjusted from 1.5 for more flexibility)
+    # Ensure scales are within reasonable bounds (0.0 to 2.0, adjusted from 1.5 for more flexibility) 
     ip_adapter_scale = float(job_input.get('ip_adapter_scale', 0.7))
     ip_adapter_scale = min(max(ip_adapter_scale, 0.0), 2.0)
     openpose_scale = float(job_input.get('openpose_scale', 1.0))
@@ -293,7 +296,7 @@ def generate_video(job: dict) -> dict:
         return {"error": "Missing 'init_image' base64 input. Please provide a base64 encoded image."}
 
     try:
-        # Decode base64 image and convert to RGB
+        # Decode base64 image and convert to RGB 
         print("🖼️ Decoding base64 image...", flush=True)
         init_image = Image.open(io.BytesIO(base64.b64decode(base64_image))).convert("RGB")
         print(f"🖼️ Input image dimensions: {init_image.size[0]}x{init_image.size[1]}", flush=True)
@@ -305,7 +308,7 @@ def generate_video(job: dict) -> dict:
     # --- Image Preprocessing ---
     print("🔍 Preprocessing input image for model inference...", flush=True)
     try:
-        # Process image for CLIP (IP-Adapter)
+        # Process image for CLIP (IP-Adapter) 
         print("  Processing image for CLIP (IP-Adapter)...", flush=True)
         processed_image = image_processor(images=init_image, return_tensors="pt").pixel_values.to("cuda", dtype=torch.float16)
         clip_features = image_encoder(processed_image).image_embeds
@@ -314,7 +317,7 @@ def generate_video(job: dict) -> dict:
             print(f"DEBUG: clip_features shape: {clip_features.shape}", flush=True)
             print(f"DEBUG: image_embeds shape: {image_embeds.shape}", flush=True)
 
-        # Generate ControlNet conditioning images
+        # Generate ControlNet conditioning images 
         print("  Generating OpenPose conditioning image...", flush=True)
         openpose_image = openpose_detector(init_image)
         if RP_DEBUG:
