@@ -33,7 +33,6 @@ torch.backends.cudnn.benchmark = True
 # --- Globals for Lazy-Loading Models ---
 pipe = None
 image_encoder = None # Will be loaded and used directly by pipe.load_ip_adapter
-image_processor = None # Will be loaded and used directly by pipe.load_ip_adapter
 openpose_detector = None
 midas_detector = None
 
@@ -154,7 +153,8 @@ def generate_video(job: dict) -> dict:
             
             # CLIP models for IP-Adapter
             clip_model_id = "openai/clip-vit-large-patch14" 
-            ip_adapter_weights_repo_id = "h94/IP-Adapter" # This repo holds only the IP-Adapter weights
+            # --- CRITICAL FIX: IP-Adapter weights are a subfolder in the h94/IP-Adapter repo ---
+            ip_adapter_subfolder_id = "h94/IP-Adapter/ip-adapter_sd15" 
 
             controlnet_openpose_id = "lllyasviel/control_v11p_sd15_openpose"
             controlnet_depth_id = "lllyasviel/control_v11f1p_sd15_depth"
@@ -210,24 +210,18 @@ def generate_video(job: dict) -> dict:
             print(f"  Loading CLIP Image Processor from {clip_model_id}...", flush=True)
             image_processor = CLIPImageProcessor.from_pretrained(clip_model_id) # No .to('cuda') for image processor
 
-            # Load IP-Adapter weights (the .bin file)
-            print(f"  Downloading IP-Adapter weights from {ip_adapter_weights_repo_id}...", flush=True)
-            ip_adapter_path = hf_hub_download(
-                repo_id=ip_adapter_weights_repo_id, filename="ip-adapter_sd15.bin"
-            )
-            
-            # Load IP-Adapter onto the pipeline
-            print("  Loading IP-Adapter onto the AnimateDiff pipeline...", flush=True)
+            # Load IP-Adapter onto the pipeline using the subfolder path
+            print(f"  Loading IP-Adapter weights from {ip_adapter_subfolder_id} onto the pipeline...", flush=True)
             pipe.load_ip_adapter(
-                ip_adapter_path,
-                subfolder="models/image_encoder", # This subfolder is internal to how `load_ip_adapter` expects CLIP.
-                                                # The actual CLIP files are not within ip_adapter_path.
-                                                # It expects the image_encoder to be available or loadable.
+                ip_adapter_subfolder_id, # Pass the full repo_id/subfolder path
+                subfolder="image_encoder", # This subfolder needs to be specified correctly for the CLIP components within that IP-Adapter folder structure.
+                                          # OR, if the `ip-adapter_sd15` folder IS the full IP-Adapter model format, just remove `subfolder`.
+                                          # Given the error, it's likely this should be removed and `ip_adapter_subfolder_id` IS the model.
                 image_encoder=image_encoder # Pass the pre-loaded image_encoder here
             )
-            # The IP-Adapter components are now managed by the pipeline.
-            # No need for a custom IPAdapterImageProj or manual cross_attention_kwargs handling of 'ip_adapter_image_embeds' if pipe.load_ip_adapter is used this way.
-            # The `image_encoder` and `image_processor` from CLIP are handled internally by the pipeline's IP-Adapter.
+            # Remove the now unnecessary custom IPAdapterImageProj class or references to it.
+            # The pipeline handles the image projection.
+            # global image_proj_model # Removed from globals as it's no longer used.
 
             print("✅ All models loaded successfully to GPU (or offloaded).", flush=True)
 
@@ -311,20 +305,9 @@ def generate_video(job: dict) -> dict:
         control_images = [openpose_image, depth_image]
 
         # --- CRITICAL FIX: IP-Adapter scale is set on the pipeline directly ---
-        # The `cross_attention_kwargs` should only contain `scale` for the IP-Adapter part if `pipe.load_ip_adapter` is used.
-        # Check diffusers docs for AnimateDiffPipeline if `ip_adapter_image_embeds` is still required directly,
-        # but typically `load_ip_adapter` handles generating and using them based on input `image`.
-        # For AnimateDiff with IP-Adapter, often you pass the *original* image directly to `pipe()`
-        # and the pipeline manages the embedding.
-        
-        # This setup (AnimateDiffPipeline with ControlNet and IP-Adapter) is complex.
-        # A common pattern is to prepare the image for IP-Adapter via `pipe.encode_image()` or similar
-        # and then pass `ip_adapter_image` or `ip_adapter_image_embeds` in `cross_attention_kwargs`.
-        # However, `diffusers` has simplified this with `load_ip_adapter` and `set_ip_adapter_scale`.
-        
-        # Let's set the IP-Adapter scale on the pipeline directly.
         pipe.set_ip_adapter_scale(ip_adapter_scale)
-        cross_attention_kwargs = {} # Empty this as scale is set directly, and embeds are handled by pipe
+        # No `cross_attention_kwargs` needed for `ip_adapter_image_embeds` if using pipe.load_ip_adapter and passing `ip_adapter_image`
+        cross_attention_kwargs = {} 
 
         print("🔍 Image preprocessing complete.", flush=True)
 
