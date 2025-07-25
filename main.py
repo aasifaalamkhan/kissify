@@ -10,7 +10,7 @@ import numpy as np
 import gc # Import garbage collection
 import time # Import time module for sleep
 
-from threading import Thread, Lock # <-- ADDED Lock
+from threading import Thread, Lock
 from flask import Flask
 
 from PIL import Image
@@ -18,7 +18,7 @@ import diffusers # Import diffusers directly to access __version__
 from diffusers import AnimateDiffPipeline, MotionAdapter, DDIMScheduler, ControlNetModel
 from diffusers.utils import export_to_video
 from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
-from controlnet_aux import OpenposeDetector, MidasDetector 
+from controlnet_aux import OpenposeDetector, MidasDetector
 from huggingface_hub import HfFolder, hf_hub_download
 
 print("✅ main.py started: Initializing script execution.", flush=True)
@@ -36,10 +36,10 @@ torch.backends.cudnn.benchmark = True
 
 # --- Globals for Lazy-Loading Models ---
 pipe = None
-image_encoder = None 
+image_encoder = None
 openpose_detector = None
 midas_detector = None
-image_processor = None 
+image_processor = None
 
 # --- ADDED: Thread-safe lazy-loading lock ---
 model_load_lock = Lock()
@@ -90,7 +90,7 @@ def upload_to_catbox(filepath: str, max_retries: int = 3, initial_delay: int = 5
             sleep_time = initial_delay * (2 ** (retries - 1)) # Exponential backoff
             print(f"Waiting {sleep_time} seconds before retrying...", flush=True)
             time.sleep(sleep_time)
-    
+            
     final_error_message = f"Error uploading: Failed to upload to Catbox after {max_retries} attempts."
     print(final_error_message, flush=True)
     return final_error_message
@@ -154,14 +154,14 @@ def generate_video(job: dict) -> dict:
                     login(token=HUGGING_FACE_TOKEN, add_to_git_credential=False)
                 else:
                     print("⚠️ Hugging Face token not found. Downloads for gated models may fail. "
-                        "Set HUGGING_FACE_HUB_TOKEN environment variable or login using `huggingface_hub.login()`.", flush=True)
+                          "Set HUGGING_FACE_HUB_TOKEN environment variable or login using `huggingface_hub.login()`.", flush=True)
 
                 # Define model IDs
                 base_model_id = "SG161222/Realistic_Vision_V5.1_noVAE"
                 motion_module_id = "guoyww/animatediff-motion-adapter-v1-5-2"
                 
                 # CLIP models for IP-Adapter (from official source)
-                clip_model_id = "openai/clip-vit-large-patch14" 
+                clip_model_id = "openai/clip-vit-large-patch14"
                 
                 # IP-Adapter model details
                 ip_adapter_repo_id = "h94/IP-Adapter"
@@ -218,7 +218,7 @@ def generate_video(job: dict) -> dict:
                 print(f"  Loading CLIP Image Encoder from {clip_model_id}...", flush=True)
                 image_encoder = CLIPVisionModelWithProjection.from_pretrained(
                     clip_model_id, torch_dtype=torch.float16
-                ) # Do not move to cuda yet, pipeline will handle it.
+                ) # Loaded on CPU initially, will be explicitly moved to pipe.device below.
                 print(f"  Loading CLIP Image Processor from {clip_model_id}...", flush=True)
                 image_processor = CLIPImageProcessor.from_pretrained(clip_model_id) # Needed for pre-processing input image
 
@@ -228,10 +228,26 @@ def generate_video(job: dict) -> dict:
                     ip_adapter_repo_id, # Passed positionally as 'pretrained_model_name_or_path'
                     subfolder=ip_adapter_model_subfolder,  # Tells it to look inside the 'models' directory
                     weight_name=ip_adapter_weight_filename, # The exact .bin file name within 'models'
-                    image_encoder=image_encoder             # Pass the pre-loaded image_encoder
+                    image_encoder=image_encoder # Pass the pre-loaded image_encoder
                 )
 
+                # ✅ CRITICAL FIX: Ensure IP-Adapter's image encoder is on the same device as the pipeline.
+                # This explicitly moves the image_encoder, which is part of pipe.image_proj_model,
+                # to the device that the rest of the pipeline is (or will be) using for computation.
+                # This is crucial when enable_model_cpu_offload is active, as it ensures device consistency.
+                print(f"  Moving IP-Adapter's image encoder to {pipe.device}...", flush=True)
+                # Wrap in a safe check to avoid unnecessary moves
+                if pipe.image_proj_model.image_encoder.device != pipe.device:
+                    pipe.image_proj_model.image_encoder.to(pipe.device)
+                
+                # Use .half() consistently on the entire pipeline for float16 operations
+                pipe.to("cuda").half() # Ensures all pipeline modules are on CUDA and in float16
+
                 print("✅ All models loaded successfully to GPU (or offloaded).", flush=True)
+
+                # Log final device for sanity check
+                print("DEBUG: IP-Adapter image encoder device (after all setup):", pipe.image_proj_model.image_encoder.device, flush=True)
+
 
                 # Initial cleanup after model loading
                 gc.collect()
@@ -249,7 +265,6 @@ def generate_video(job: dict) -> dict:
                 return {"error": error_message}
 
     # --- Parse Job Input ---
-    # --- FIX: Job input fallback ---
     job_input = job.get('input') or job
     base64_image = job_input.get('init_image')
     prompt = job_input.get('prompt', 'a couple kissing, beautiful, cinematic')
@@ -304,19 +319,20 @@ def generate_video(job: dict) -> dict:
         print("  Generating OpenPose conditioning image...", flush=True)
         openpose_image = openpose_detector(np_image) # Use np_image
         if RP_DEBUG:
-            print(f"DEBUG: OpenPose image generated. Size: {openpose_image.size}", flush=True)
+            print(f"DEBUG: OpenPose image generated. Size: {openpose_image.size[0]}x{openpose_image.size[1]}", flush=True) # Consistent logging
         print("  Generating Depth conditioning image...", flush=True)
         depth_image = midas_detector(np_image) # Use np_image
         if RP_DEBUG:
-            print(f"DEBUG: Depth image generated. Size: {depth_image.size}", flush=True)
-
+            # midas_detector returns a PIL Image, so .size is a tuple like PIL images
+            print(f"DEBUG: Depth image generated. Size: {depth_image.size[0]}x{depth_image.size[1]}", flush=True) # Consistent logging
+        
         control_images = [openpose_image, depth_image]
 
         # --- CRITICAL FIX: IP-Adapter scale is set on the pipeline directly ---
         pipe.set_ip_adapter_scale(ip_adapter_scale)
         # No `cross_attention_kwargs` needed for `ip_adapter_image_embeds` if using pipe.load_ip_adapter and passing `ip_adapter_image`
-        cross_attention_kwargs = {} 
-
+        cross_attention_kwargs = {}
+        
         print("🔍 Image preprocessing complete.", flush=True)
 
     except Exception as e:
@@ -342,13 +358,15 @@ def generate_video(job: dict) -> dict:
                 image=control_images, # ControlNet conditioning images
                 controlnet_conditioning_scale=[openpose_scale, depth_scale], # Scales for each ControlNet
                 # --- CRITICAL FIX: Pass the original init_image to `pipe` for IP-Adapter ---
+                # The pipeline's internal methods will handle processing `init_image` with image_processor
+                # and ensuring the resulting tensor is on the correct device.
                 ip_adapter_image=init_image, # Pass original PIL image here for IP-Adapter
                 cross_attention_kwargs=cross_attention_kwargs, # Should be empty or contain other specific kwargs if any
                 height=height,
                 width=width
             )
             # Assign frames to a variable explicitly for clarity and longevity
-            generated_frames = output.frames[0] 
+            generated_frames = output.frames[0]
             print("✅ Video inference completed.", flush=True)
 
         except torch.cuda.OutOfMemoryError:
@@ -361,7 +379,7 @@ def generate_video(job: dict) -> dict:
             return {"error": error_message}
         except Exception as e:
             error_message = f"❌ Video inference failed: {traceback.format_exc()}"
-            print(error_message, flush=True) 
+            print(error_message, flush=True)
             return {"error": error_message}
 
     # Log CUDA memory after inference, before major cleanup
