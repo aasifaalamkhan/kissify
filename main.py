@@ -36,7 +36,7 @@ class IPAdapterImageProj(torch.nn.Module):
     A simple linear layer to project image embeddings for the IP-Adapter.
     """
     def __init__(self, state_dict):
-        super()._init_()
+        super().__init__()
         # Initialize a linear layer based on the shapes found in the state_dict
         # Ensure dimensions match what the state_dict expects
         try:
@@ -194,7 +194,8 @@ def generate_video(job: dict) -> dict:
 
             # Define model IDs
             base_model_id = "SG161222/Realistic_Vision_V5.1_noVAE"
-            motion_module_id = "ByteDance/AnimateDiff-Lightning-T2V" # Updated motion module ID
+            # CORRECTED MOTION MODULE ID
+            motion_module_id = "guoyww/animatediff-motion-adapter-v1-5-2" 
             ip_adapter_repo_id = "h94/IP-Adapter"
             controlnet_openpose_id = "lllyasviel/control_v11p_sd15_openpose"
             controlnet_depth_id = "lllyasviel/control_v11f1p_sd15_depth"
@@ -299,7 +300,7 @@ def generate_video(job: dict) -> dict:
     height = max(256, min(height, 1024)) # Example: Min 256, Max 1024
     width = max(256, min(width, 1024))   # Example: Min 256, Max 1024
     num_frames = max(8, min(num_frames, 32)) # Example: Min 8, Max 32 frames
-    fps = max(4, min(fps, 15))         # Example: Min 4, Max 15 FPS
+    fps = max(4, min(fps, 15))           # Example: Min 4, Max 15 FPS
 
     # Ensure scales are within reasonable bounds (0.0 to 2.0, adjusted from 1.5 for more flexibility)
     ip_adapter_scale = float(job_input.get('ip_adapter_scale', 0.7))
@@ -378,7 +379,7 @@ def generate_video(job: dict) -> dict:
             controlnet_conditioning_scale=[openpose_scale, depth_scale], # Scales for each ControlNet
             cross_attention_kwargs=cross_attention_kwargs,
             height=height, # Pass height
-            width=width    # Pass width
+            width=width   # Pass width
         )
         frames = output.frames[0] # Assuming we want the first (and likely only) generated video
         print("✅ Video inference completed.", flush=True)
@@ -411,11 +412,21 @@ def generate_video(job: dict) -> dict:
     print("📼 Exporting video and preparing for upload...", flush=True)
     with tempfile.TemporaryDirectory() as tmpdir:
         video_path = os.path.join(tmpdir, "kissify_video.mp4")
+        thumbnail_path = os.path.join(tmpdir, "kissify_thumbnail.jpg")
         try:
             export_to_video(frames, video_path, fps=fps)
             print(f"📼 Video exported to {video_path} with {fps} FPS.", flush=True)
+
+            # Generate thumbnail from the first frame
+            if frames and len(frames) > 0:
+                frames[0].save(thumbnail_path)
+                print(f"🖼️ Thumbnail exported to {thumbnail_path}.", flush=True)
+            else:
+                print("⚠️ No frames to generate thumbnail from.", flush=True)
+                thumbnail_path = None # Indicate no thumbnail generated
+
         except Exception as e:
-            error_message = f"❌ Failed to export video: {traceback.format_exc()}"
+            error_message = f"❌ Failed to export video or thumbnail: {traceback.format_exc()}"
             print(error_message, flush=True)
             return {"error": error_message}
 
@@ -426,8 +437,16 @@ def generate_video(job: dict) -> dict:
             print(f"❌ Video upload failed: {video_url}", flush=True)
             return {"error": video_url}
 
-        print(f"✅ Video generation complete and uploaded. URL: {video_url}", flush=True)
-        return {"output": {"video_url": video_url}}
+        thumbnail_url = None
+        if thumbnail_path:
+            print("🚀 Uploading generated thumbnail to Catbox...", flush=True)
+            thumbnail_url = upload_to_catbox(filepath=thumbnail_path, max_retries=5)
+            if "Error" in thumbnail_url:
+                print(f"❌ Thumbnail upload failed: {thumbnail_url}", flush=True)
+                thumbnail_url = None # Set to None if upload fails for thumbnail
+
+        print(f"✅ Video generation complete and uploaded. Video URL: {video_url}", flush=True)
+        return {"output": {"video_url": video_url, "thumbnail_url": thumbnail_url}}
 
 # --- Entry Point for RunPod Worker ---
 if __name__ == "__main__":
