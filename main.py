@@ -10,15 +10,16 @@ import numpy as np
 import gc # Import garbage collection
 import time # Import time module for sleep
 
-from threading import Thread
+from threading import Thread, Lock # <-- ADDED Lock
 from flask import Flask
 
 from PIL import Image
+import diffusers # Import diffusers directly to access __version__
 from diffusers import AnimateDiffPipeline, MotionAdapter, DDIMScheduler, ControlNetModel
 from diffusers.utils import export_to_video
 from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
 from controlnet_aux import OpenposeDetector, MidasDetector 
-from huggingface_hub import HfFolder # For better token handling
+from huggingface_hub import HfFolder, hf_hub_download
 
 print("✅ main.py started: Initializing script execution.", flush=True)
 
@@ -26,6 +27,9 @@ print("✅ main.py started: Initializing script execution.", flush=True)
 RP_DEBUG = os.getenv("RP_DEBUG", "False").lower() == "true"
 if RP_DEBUG:
     print("✨ Debug mode is ENABLED.", flush=True)
+
+# --- Action Item: Log diffusers version for reproducibility ---
+print(f"Diffusers version: {diffusers.__version__}", flush=True)
 
 # Optimize cuDNN for consistent input shapes (like image sizes)
 torch.backends.cudnn.benchmark = True
@@ -36,6 +40,9 @@ image_encoder = None
 openpose_detector = None
 midas_detector = None
 image_processor = None 
+
+# --- ADDED: Thread-safe lazy-loading lock ---
+model_load_lock = Lock()
 
 # Set Hugging Face cache directory (important if pre-fetching during build)
 os.environ['HF_HOME'] = os.getenv('HF_HOME', '/app/hf_cache')
@@ -125,120 +132,121 @@ def generate_video(job: dict) -> dict:
     print(f"📥 Job received. Processing job ID: {job_id}", flush=True)
     global pipe, image_encoder, openpose_detector, midas_detector, image_processor
 
-    # Lazy-load models on the first job
-    if pipe is None:
-        print("⏳ Models not loaded. Beginning model loading process...", flush=True)
-        print("Waiting 5 seconds for network to stabilize...", flush=True)
-        time.sleep(5)
-        print("Resuming model loading...", flush=True)
+    # --- ADDED: Thread-safe lazy-loading ---
+    with model_load_lock:
+        if pipe is None:
+            print("⏳ Models not loaded. Beginning model loading process...", flush=True)
+            print("Waiting 5 seconds for network to stabilize...", flush=True)
+            time.sleep(5)
+            print("Resuming model loading...", flush=True)
 
-        try:
-            if not torch.cuda.is_available():
-                raise RuntimeError("CUDA is not available! A GPU is absolutely required for this application.")
-            print(f"CUDA is available. Device count: {torch.cuda.device_count()}", flush=True)
-            print(f"Current CUDA device: {torch.cuda.current_device()}", flush=True)
-            print(f"CUDA device name: {torch.cuda.get_device_name(0)}", flush=True)
+            try:
+                if not torch.cuda.is_available():
+                    raise RuntimeError("CUDA is not available! A GPU is absolutely required for this application.")
+                print(f"CUDA is available. Device count: {torch.cuda.device_count()}", flush=True)
+                print(f"Current CUDA device: {torch.cuda.current_device()}", flush=True)
+                print(f"CUDA device name: {torch.cuda.get_device_name(0)}", flush=True)
 
-            HUGGING_FACE_TOKEN = os.getenv("HUGGING_FACE_HUB_TOKEN") or HfFolder.get_token()
-            if HUGGING_FACE_TOKEN:
-                print("🔐 Hugging Face token detected.", flush=True)
-                from huggingface_hub import login
-                login(token=HUGGING_FACE_TOKEN, add_to_git_credential=False)
-            else:
-                print("⚠️ Hugging Face token not found. Downloads for gated models may fail. "
-                      "Set HUGGING_FACE_HUB_TOKEN environment variable or login using `huggingface_hub.login()`.", flush=True)
+                HUGGING_FACE_TOKEN = os.getenv("HUGGING_FACE_HUB_TOKEN") or HfFolder.get_token()
+                if HUGGING_FACE_TOKEN:
+                    print("🔐 Hugging Face token detected.", flush=True)
+                    from huggingface_hub import login
+                    login(token=HUGGING_FACE_TOKEN, add_to_git_credential=False)
+                else:
+                    print("⚠️ Hugging Face token not found. Downloads for gated models may fail. "
+                        "Set HUGGING_FACE_HUB_TOKEN environment variable or login using `huggingface_hub.login()`.", flush=True)
 
-            # Define model IDs
-            base_model_id = "SG161222/Realistic_Vision_V5.1_noVAE"
-            motion_module_id = "guoyww/animatediff-motion-adapter-v1-5-2"
-            
-            # CLIP models for IP-Adapter (from official source)
-            clip_model_id = "openai/clip-vit-large-patch14" 
-            
-            # IP-Adapter model details
-            ip_adapter_repo_id = "h94/IP-Adapter"
-            ip_adapter_model_subfolder = "models" # The subfolder where the .bin files are
-            ip_adapter_weight_filename = "ip-adapter_sd15.bin" # The exact .bin file name
+                # Define model IDs
+                base_model_id = "SG161222/Realistic_Vision_V5.1_noVAE"
+                motion_module_id = "guoyww/animatediff-motion-adapter-v1-5-2"
+                
+                # CLIP models for IP-Adapter (from official source)
+                clip_model_id = "openai/clip-vit-large-patch14" 
+                
+                # IP-Adapter model details
+                ip_adapter_repo_id = "h94/IP-Adapter"
+                ip_adapter_model_subfolder = "models" # The subfolder where the .bin files are
+                ip_adapter_weight_filename = "ip-adapter_sd15.bin" # The exact .bin file name
 
-            controlnet_openpose_id = "lllyasviel/control_v11p_sd15_openpose"
-            controlnet_depth_id = "lllyasviel/control_v11f1p_sd15_depth"
-            controlnet_aux_id = "lllyasviel/ControlNet"
+                controlnet_openpose_id = "lllyasviel/control_v11p_sd15_openpose"
+                controlnet_depth_id = "lllyasviel/control_v11f1p_sd15_depth"
+                controlnet_aux_id = "lllyasviel/ControlNet"
 
-            print(f"  Loading OpenPose ControlNet from {controlnet_openpose_id}...", flush=True)
-            openpose_controlnet = ControlNetModel.from_pretrained(
-                controlnet_openpose_id, torch_dtype=torch.float16, use_safetensors=True
-            )
-            print(f"  Loading Depth ControlNet from {controlnet_depth_id}...", flush=True)
-            depth_controlnet = ControlNetModel.from_pretrained(
-                controlnet_depth_id, torch_dtype=torch.float16, use_safetensors=True
-            )
-            print("  ControlNet models loaded.", flush=True)
+                print(f"  Loading OpenPose ControlNet from {controlnet_openpose_id}...", flush=True)
+                openpose_controlnet = ControlNetModel.from_pretrained(
+                    controlnet_openpose_id, torch_dtype=torch.float16, use_safetensors=True
+                )
+                print(f"  Loading Depth ControlNet from {controlnet_depth_id}...", flush=True)
+                depth_controlnet = ControlNetModel.from_pretrained(
+                    controlnet_depth_id, torch_dtype=torch.float16, use_safetensors=True
+                )
+                print("  ControlNet models loaded.", flush=True)
 
-            print(f"  Loading OpenposeDetector from {controlnet_aux_id}...", flush=True)
-            openpose_detector = OpenposeDetector.from_pretrained(controlnet_aux_id)
-            print(f"  Loading MidasDetector from {controlnet_aux_id}...", flush=True)
-            midas_detector = MidasDetector.from_pretrained(controlnet_aux_id)
-            print("  ControlNet auxiliary detectors loaded.", flush=True)
+                print(f"  Loading OpenposeDetector from {controlnet_aux_id}...", flush=True)
+                openpose_detector = OpenposeDetector.from_pretrained(controlnet_aux_id)
+                print(f"  Loading MidasDetector from {controlnet_aux_id}...", flush=True)
+                midas_detector = MidasDetector.from_pretrained(controlnet_aux_id)
+                print("  ControlNet auxiliary detectors loaded.", flush=True)
 
-            print(f"  Loading MotionAdapter from {motion_module_id}...", flush=True)
-            adapter = MotionAdapter.from_pretrained(motion_module_id, torch_dtype=torch.float16)
-            print("  MotionAdapter loaded.", flush=True)
+                print(f"  Loading MotionAdapter from {motion_module_id}...", flush=True)
+                adapter = MotionAdapter.from_pretrained(motion_module_id, torch_dtype=torch.float16)
+                print("  MotionAdapter loaded.", flush=True)
 
-            print(f"  Loading AnimateDiff pipeline from {base_model_id}...", flush=True)
-            pipe = AnimateDiffPipeline.from_pretrained(
-                base_model_id,
-                motion_adapter=adapter,
-                controlnet=[openpose_controlnet, depth_controlnet],
-                torch_dtype=torch.float16,
-                use_safetensors=True
-            )
-            print("  AnimateDiff pipeline loaded. Setting scheduler...", flush=True)
-            pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
-            print("  Scheduler set.", flush=True)
-            
-            # --- FIX: Call enable_model_cpu_offload safely ---
-            if hasattr(pipe, "enable_model_cpu_offload"):
-                print("  Enabling model CPU offload...", flush=True)
-                pipe.enable_model_cpu_offload()
+                print(f"  Loading AnimateDiff pipeline from {base_model_id}...", flush=True)
+                pipe = AnimateDiffPipeline.from_pretrained(
+                    base_model_id,
+                    motion_adapter=adapter,
+                    controlnet=[openpose_controlnet, depth_controlnet],
+                    torch_dtype=torch.float16,
+                    use_safetensors=True
+                )
+                print("  AnimateDiff pipeline loaded. Setting scheduler...", flush=True)
+                pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
+                print("  Scheduler set.", flush=True)
+                
+                # --- FIX: Call enable_model_cpu_offload safely ---
+                if hasattr(pipe, "enable_model_cpu_offload"):
+                    print("  Enabling model CPU offload...", flush=True)
+                    pipe.enable_model_cpu_offload()
+                    if RP_DEBUG:
+                        print("DEBUG: pipe.device (after offload):", pipe.device, flush=True)
+                else:
+                    print("  pipe.enable_model_cpu_offload() not found or not applicable.", flush=True)
+
+                # --- CRITICAL FIX: Proper IP-Adapter integration with the pipeline ---
+                # Load CLIP components
+                print(f"  Loading CLIP Image Encoder from {clip_model_id}...", flush=True)
+                image_encoder = CLIPVisionModelWithProjection.from_pretrained(
+                    clip_model_id, torch_dtype=torch.float16
+                ) # Do not move to cuda yet, pipeline will handle it.
+                print(f"  Loading CLIP Image Processor from {clip_model_id}...", flush=True)
+                image_processor = CLIPImageProcessor.from_pretrained(clip_model_id) # Needed for pre-processing input image
+
+                # --- CRITICAL FIX: Load IP-Adapter using correct subfolder and weight_name (passing pretrained_model_name_or_path positionally) ---
+                print(f"  Loading IP-Adapter weights: {ip_adapter_repo_id} (subfolder: {ip_adapter_model_subfolder}, filename: {ip_adapter_weight_filename})...", flush=True)
+                pipe.load_ip_adapter(
+                    ip_adapter_repo_id, # Passed positionally as 'pretrained_model_name_or_path'
+                    subfolder=ip_adapter_model_subfolder,  # Tells it to look inside the 'models' directory
+                    weight_name=ip_adapter_weight_filename, # The exact .bin file name within 'models'
+                    image_encoder=image_encoder             # Pass the pre-loaded image_encoder
+                )
+
+                print("✅ All models loaded successfully to GPU (or offloaded).", flush=True)
+
+                # Initial cleanup after model loading
+                gc.collect()
+                torch.cuda.empty_cache()
                 if RP_DEBUG:
-                    print("DEBUG: pipe.device (after offload):", pipe.device, flush=True)
-            else:
-                print("  pipe.enable_model_cpu_offload() not found or not applicable.", flush=True)
+                    print(f"DEBUG: CUDA memory after initial load: {torch.cuda.memory_allocated() / (1024**3):.2f} GB", flush=True)
 
-            # --- CRITICAL FIX: Proper IP-Adapter integration with the pipeline ---
-            # Load CLIP components
-            print(f"  Loading CLIP Image Encoder from {clip_model_id}...", flush=True)
-            image_encoder = CLIPVisionModelWithProjection.from_pretrained(
-                clip_model_id, torch_dtype=torch.float16
-            ) # Do not move to cuda yet, pipeline will handle it.
-            print(f"  Loading CLIP Image Processor from {clip_model_id}...", flush=True)
-            image_processor = CLIPImageProcessor.from_pretrained(clip_model_id) # Needed for pre-processing input image
-
-            # --- CRITICAL FIX: Load IP-Adapter using correct subfolder and weight_name ---
-            print(f"  Loading IP-Adapter weights: {ip_adapter_repo_id} (subfolder: {ip_adapter_model_subfolder}, filename: {ip_adapter_weight_filename})...", flush=True)
-            pipe.load_ip_adapter(
-                pretrained_model_name_or_path=ip_adapter_repo_id,
-                subfolder=ip_adapter_model_subfolder,  # Tells it to look inside the 'models' directory
-                weight_name=ip_adapter_weight_filename, # The exact .bin file name within 'models'
-                image_encoder=image_encoder             # Pass the pre-loaded image_encoder
-            )
-
-            print("✅ All models loaded successfully to GPU (or offloaded).", flush=True)
-
-            # Initial cleanup after model loading
-            gc.collect()
-            torch.cuda.empty_cache()
-            if RP_DEBUG:
-                print(f"DEBUG: CUDA memory after initial load: {torch.cuda.memory_allocated() / (1024**3):.2f} GB", flush=True)
-
-        except RuntimeError as e:
-            error_message = f"❌ CUDA or Model Initialization Critical Error: {e}\n{traceback.format_exc()}"
-            print(error_message, flush=True)
-            return {"error": error_message}
-        except Exception as e:
-            error_message = f"❌ Model loading failed unexpectedly: {traceback.format_exc()}"
-            print(error_message, flush=True)
-            return {"error": error_message}
+            except RuntimeError as e:
+                error_message = f"❌ CUDA or Model Initialization Critical Error: {e}\n{traceback.format_exc()}"
+                print(error_message, flush=True)
+                return {"error": error_message}
+            except Exception as e:
+                error_message = f"❌ Model loading failed unexpectedly: {traceback.format_exc()}"
+                print(error_message, flush=True)
+                return {"error": error_message}
 
     # --- Parse Job Input ---
     # --- FIX: Job input fallback ---
@@ -320,40 +328,41 @@ def generate_video(job: dict) -> dict:
     if RP_DEBUG:
         print(f"DEBUG: CUDA memory BEFORE inference: {torch.cuda.memory_allocated() / (1024**3):.2f} GB", flush=True)
 
-    # --- Video Inference ---
-    print("✨ Starting video generation inference...", flush=True)
-    try:
-        output = pipe(
-            prompt=prompt,
-            negative_prompt="ugly, distorted, low quality, cropped, blurry, bad anatomy, bad quality, long_neck, long_body, text, watermark, signature",
-            num_frames=num_frames,
-            guidance_scale=7.5,
-            num_inference_steps=20,
-            image=control_images, # ControlNet conditioning images
-            controlnet_conditioning_scale=[openpose_scale, depth_scale], # Scales for each ControlNet
-            # --- CRITICAL FIX: Pass the original init_image to `pipe` for IP-Adapter ---
-            ip_adapter_image=init_image, # Pass original PIL image here for IP-Adapter
-            cross_attention_kwargs=cross_attention_kwargs, # Should be empty or contain other specific kwargs if any
-            height=height,
-            width=width
-        )
-        # Assign frames to a variable explicitly for clarity and longevity
-        generated_frames = output.frames[0] 
-        print("✅ Video inference completed.", flush=True)
+    # --- ADDED: Autocast for mixed precision inference ---
+    with torch.cuda.amp.autocast(dtype=torch.float16):
+        # --- Video Inference ---
+        print("✨ Starting video generation inference...", flush=True)
+        try:
+            output = pipe(
+                prompt=prompt,
+                negative_prompt="ugly, distorted, low quality, cropped, blurry, bad anatomy, bad quality, long_neck, long_body, text, watermark, signature",
+                num_frames=num_frames,
+                guidance_scale=7.5,
+                num_inference_steps=20,
+                image=control_images, # ControlNet conditioning images
+                controlnet_conditioning_scale=[openpose_scale, depth_scale], # Scales for each ControlNet
+                # --- CRITICAL FIX: Pass the original init_image to `pipe` for IP-Adapter ---
+                ip_adapter_image=init_image, # Pass original PIL image here for IP-Adapter
+                cross_attention_kwargs=cross_attention_kwargs, # Should be empty or contain other specific kwargs if any
+                height=height,
+                width=width
+            )
+            # Assign frames to a variable explicitly for clarity and longevity
+            generated_frames = output.frames[0] 
+            print("✅ Video inference completed.", flush=True)
 
-    except torch.cuda.OutOfMemoryError:
-        error_message = "❌ CUDA Out Of Memory error during inference. Try reducing num_frames or image resolution. Current memory usage might be too high."
-        print(error_message, flush=True)
-        gc.collect()
-        torch.cuda.empty_cache()
-        if RP_DEBUG:
-            print(f"DEBUG: CUDA memory after OOM attempt to clear: {torch.cuda.memory_allocated() / (1024**3):.2f} GB", flush=True)
-        return {"error": error_message}
-    except Exception as e:
-        # --- TYPO FIX: Changed 'error_error' to 'error_message' ---
-        error_message = f"❌ Video inference failed: {traceback.format_exc()}"
-        print(error_message, flush=True) 
-        return {"error": error_message}
+        except torch.cuda.OutOfMemoryError:
+            error_message = "❌ CUDA Out Of Memory error during inference. Try reducing num_frames or image resolution. Current memory usage might be too high."
+            print(error_message, flush=True)
+            gc.collect()
+            torch.cuda.empty_cache()
+            if RP_DEBUG:
+                print(f"DEBUG: CUDA memory after OOM attempt to clear: {torch.cuda.memory_allocated() / (1024**3):.2f} GB", flush=True)
+            return {"error": error_message}
+        except Exception as e:
+            error_message = f"❌ Video inference failed: {traceback.format_exc()}"
+            print(error_message, flush=True) 
+            return {"error": error_message}
 
     # Log CUDA memory after inference, before major cleanup
     if RP_DEBUG:
@@ -389,6 +398,8 @@ def generate_video(job: dict) -> dict:
         torch.cuda.empty_cache()
         if RP_DEBUG:
             print(f"DEBUG: CUDA memory after video export and cleanup: {torch.cuda.memory_allocated() / (1024**3):.2f} GB", flush=True)
+            # --- ADDED: CUDA max memory allocated report ---
+            print(f"DEBUG: CUDA max memory allocated: {torch.cuda.max_memory_allocated() / (1024**3):.2f} GB", flush=True)
 
         print("🚀 Uploading generated video to Catbox...", flush=True)
         video_url = upload_to_catbox(filepath=video_path, max_retries=5)
