@@ -41,5 +41,6 @@ git+https://github.com/tencent-ailab/IP-Adapter.git@main#egg=ip_adapter
 huggingface_hub==0.20.3
 
 # Added: protobuf is a common dependency that can cause issues if not pinned
-# or if too new/old for other libraries. Pinning a widely compatible version is good.
+# or if too new/old for other libraries.
+# Pinning a widely compatible version is good.
 protobuf==3.20.3
