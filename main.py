@@ -17,8 +17,7 @@ from PIL import Image
 from diffusers import AnimateDiffPipeline, MotionAdapter, DDIMScheduler, ControlNetModel
 from diffusers.utils import export_to_video
 from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
-from controlnet_aux import OpenposeDetector, MidasDetector
-from huggingface_hub import hf_hub_download, HfFolder # For better token handling
+from huggingface_hub import HfFolder # For better token handling
 
 print("✅ main.py started: Initializing script execution.", flush=True)
 
@@ -35,6 +34,9 @@ pipe = None
 image_encoder = None # Will be loaded and used directly by pipe.load_ip_adapter
 openpose_detector = None
 midas_detector = None
+# image_processor is not strictly global if only used internally by pipe.load_ip_adapter or for specific preproc.
+# But keeping it here for consistency if future preproc needs it.
+image_processor = None 
 
 # Set Hugging Face cache directory (important if pre-fetching during build)
 os.environ['HF_HOME'] = os.getenv('HF_HOME', '/app/hf_cache')
@@ -122,7 +124,7 @@ def generate_video(job: dict) -> dict:
     """
     job_id = job.get('id', 'N/A')
     print(f"📥 Job received. Processing job ID: {job_id}", flush=True)
-    global pipe, image_encoder, openpose_detector, midas_detector
+    global pipe, image_encoder, openpose_detector, midas_detector, image_processor
 
     # Lazy-load models on the first job
     if pipe is None:
@@ -151,10 +153,13 @@ def generate_video(job: dict) -> dict:
             base_model_id = "SG161222/Realistic_Vision_V5.1_noVAE"
             motion_module_id = "guoyww/animatediff-motion-adapter-v1-5-2"
             
-            # CLIP models for IP-Adapter
+            # CLIP models for IP-Adapter (from official source)
             clip_model_id = "openai/clip-vit-large-patch14" 
-            # --- CRITICAL FIX: IP-Adapter weights are a subfolder in the h94/IP-Adapter repo ---
-            ip_adapter_subfolder_id = "h94/IP-Adapter/ip-adapter_sd15" 
+            
+            # IP-Adapter model details
+            ip_adapter_repo_id = "h94/IP-Adapter"
+            ip_adapter_model_subfolder = "models" # The subfolder where the .bin files are
+            ip_adapter_weight_filename = "ip-adapter_sd15.bin" # The exact .bin file name
 
             controlnet_openpose_id = "lllyasviel/control_v11p_sd15_openpose"
             controlnet_depth_id = "lllyasviel/control_v11f1p_sd15_depth"
@@ -208,20 +213,16 @@ def generate_video(job: dict) -> dict:
                 clip_model_id, torch_dtype=torch.float16
             ) # Do not move to cuda yet, pipeline will handle it.
             print(f"  Loading CLIP Image Processor from {clip_model_id}...", flush=True)
-            image_processor = CLIPImageProcessor.from_pretrained(clip_model_id) # No .to('cuda') for image processor
+            image_processor = CLIPImageProcessor.from_pretrained(clip_model_id) # Needed for pre-processing input image
 
-            # Load IP-Adapter onto the pipeline using the subfolder path
-            print(f"  Loading IP-Adapter weights from {ip_adapter_subfolder_id} onto the pipeline...", flush=True)
+            # --- CRITICAL FIX: Load IP-Adapter using correct subfolder and weight_name ---
+            print(f"  Loading IP-Adapter weights: {ip_adapter_repo_id} (subfolder: {ip_adapter_model_subfolder}, filename: {ip_adapter_weight_filename})...", flush=True)
             pipe.load_ip_adapter(
-                ip_adapter_subfolder_id, # Pass the full repo_id/subfolder path
-                subfolder="image_encoder", # This subfolder needs to be specified correctly for the CLIP components within that IP-Adapter folder structure.
-                                          # OR, if the `ip-adapter_sd15` folder IS the full IP-Adapter model format, just remove `subfolder`.
-                                          # Given the error, it's likely this should be removed and `ip_adapter_subfolder_id` IS the model.
-                image_encoder=image_encoder # Pass the pre-loaded image_encoder here
+                pretrained_model_name_or_path=ip_adapter_repo_id,
+                subfolder=ip_adapter_model_subfolder,  # Tells it to look inside the 'models' directory
+                weight_name=ip_adapter_weight_filename, # The exact .bin file name within 'models'
+                image_encoder=image_encoder             # Pass the pre-loaded image_encoder
             )
-            # Remove the now unnecessary custom IPAdapterImageProj class or references to it.
-            # The pipeline handles the image projection.
-            # global image_proj_model # Removed from globals as it's no longer used.
 
             print("✅ All models loaded successfully to GPU (or offloaded).", flush=True)
 
