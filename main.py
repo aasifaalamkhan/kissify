@@ -231,22 +231,29 @@ def generate_video(job: dict) -> dict:
                     image_encoder=image_encoder # Pass the pre-loaded image_encoder
                 )
 
-                # ✅ CRITICAL FIX: Ensure IP-Adapter's image encoder is on the same device as the pipeline.
-                # This explicitly moves the image_encoder, which is part of pipe.image_proj_model,
-                # to the device that the rest of the pipeline is (or will be) using for computation.
-                # This is crucial when enable_model_cpu_offload is active, as it ensures device consistency.
-                print(f"  Moving IP-Adapter's image encoder to {pipe.device}...", flush=True)
-                # Wrap in a safe check to avoid unnecessary moves
-                if pipe.image_proj_model.image_encoder.device != pipe.device:
-                    pipe.image_proj_model.image_encoder.to(pipe.device)
+                # ✅ CRITICAL FIX: Removed the problematic line causing AttributeError.
+                # The pipeline's enable_model_cpu_offload and load_ip_adapter methods,
+                # combined with passing ip_adapter_image in the pipe() call,
+                # correctly handle device placement. No manual intervention needed here.
+                # if pipe.image_proj_model.image_encoder.device != pipe.device:
+                #     pipe.image_proj_model.image_encoder.to(pipe.device)
                 
                 # Use .half() consistently on the entire pipeline for float16 operations
-                pipe.to("cuda").half() # Ensures all pipeline modules are on CUDA and in float16
+                # When enable_model_cpu_offload is used, the .to("cuda").half() is applied
+                # dynamically to sub-modules as they are moved to GPU for computation.
+                # Applying it here on the whole pipeline can interfere with offloading
+                # if you intend for models to truly be on CPU when idle.
+                # It's best to rely on enable_model_cpu_offload for device management.
+                # If you absolutely want everything on GPU always, remove enable_model_cpu_offload.
+                # Otherwise, this line should be removed or commented out.
+                # pipe.to("cuda").half() # <-- REMOVED this line as it can conflict with offload
+
 
                 print("✅ All models loaded successfully to GPU (or offloaded).", flush=True)
 
                 # Log final device for sanity check
-                print("DEBUG: IP-Adapter image encoder device (after all setup):", pipe.image_proj_model.image_encoder.device, flush=True)
+                # Using pipe.device is generally more reliable when offloading is active.
+                print("DEBUG: Pipe device (after all setup):", pipe.device, flush=True)
 
 
                 # Initial cleanup after model loading
