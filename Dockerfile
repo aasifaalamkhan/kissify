@@ -38,17 +38,17 @@ RUN echo "--- Installing Python packages from requirements.txt ---" && \
 # --- OPTIONAL: Pre-fetch Hugging Face models during build ---
 # (Keep this section commented out unless you actively need it and configure the token)
 # RUN --mount=type=secret,id=huggingface_token,target=/run/secrets/huggingface_token \
-#     export HF_HOME="/app/hf_cache" && \
-#     mkdir -p ${HF_HOME} && \
-#     echo "--- Pre-fetching Hugging Face models ---" && \
-#     python -c " \
+#       export HF_HOME="/app/hf_cache" && \
+#       mkdir -p ${HF_HOME} && \
+#       echo "--- Pre-fetching Hugging Face models ---" && \
+#       python -c " \
 # import os; \
 # from huggingface_hub import hf_hub_download, snapshot_download; \
 # token = os.environ.get('HUGGING_FACE_HUB_TOKEN') or open('/run/secrets/huggingface_token').read().strip(); \
 # print('Pre-fetching SG161222/Realistic_Vision_V5.1_noVAE...'); \
 # snapshot_download(repo_id='SG161222/Realistic_Vision_V5.1_noVAE', allow_patterns=['*.safetensors', '*.json'], local_dir=f'{os.environ['HF_HOME']}/SG161222/Realistic_Vision_V5.1_noVAE', resume_download=True, token=token); \
-# print('Pre-fetching guoyww/animatediff-motion-module-v3...'); \
-# snapshot_download(repo_id='guoyww/animatediff-motion-module-v3', allow_patterns=['*.safetensors', '*.json'], local_dir=f'{os.environ['HF_HOME']}/guoyww/animatediff-motion-module-v3', resume_download=True, token=token); \
+# print('Pre-fetching guoyww/animatediff-motion-adapter-v1-5-2...'); /* FIXED: Changed from motion-module-v3 */ \
+# snapshot_download(repo_id='guoyww/animatediff-motion-adapter-v1-5-2', allow_patterns=['*.safetensors', '*.json'], local_dir=f'{os.environ['HF_HOME']}/guoyww/animatediff-motion-adapter-v1-5-2', resume_download=True, token=token); \
 # print('Pre-fetching lllyasviel/control_v11p_sd15_openpose...'); \
 # snapshot_download(repo_id='lllyasviel/control_v11p_sd15_openpose', allow_patterns=['*.safetensors', '*.json'], local_dir=f'{os.environ['HF_HOME']}/lllyasviel/control_v11p_sd15_openpose', resume_download=True, token=token); \
 # print('Pre-fetching lllyasviel/control_v11f1p_sd15_depth...'); \
@@ -57,7 +57,7 @@ RUN echo "--- Installing Python packages from requirements.txt ---" && \
 # snapshot_download(repo_id='h94/IP-Adapter', allow_patterns=['models/image_encoder/*', 'ip-adapter_sd15.bin'], local_dir=f'{os.environ['HF_HOME']}/h94/IP-Adapter', resume_download=True, token=token); \
 # print('Model pre-fetching complete.'); \
 # " && \
-#     echo "--- Pre-fetched models successfully ---"
+#       echo "--- Pre-fetched models successfully ---"
 
 # Copy your main application script into the container.
 COPY main.py .
