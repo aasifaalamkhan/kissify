@@ -17,9 +17,8 @@ from PIL import Image
 import diffusers
 from diffusers import AnimateDiffPipeline, MotionAdapter, DDIMScheduler, ControlNetModel
 from diffusers.utils import export_to_video
-from transformers import CLIPVisionModelWithProjection # CLIPImageProcessor removed as per previous suggestion
+from transformers import CLIPVisionModelWithProjection
 from controlnet_aux import OpenposeDetector, MidasDetector
-# from huggingface_hub import HfFolder, hf_hub_download, login as hf_login # Removed hf_login for runtime as pre-download handles it
 
 print("✅ main.py started: Initializing script execution.", flush=True)
 
@@ -135,6 +134,7 @@ def generate_video(job: dict) -> dict:
     # --- Thread-safe lazy-loading ---
     with model_load_lock:
         if pipe is None:
+            # Removed the 5-second sleep, as models are now pre-cached.
             print("⏳ Models not loaded. Beginning model loading from local cache...", flush=True)
 
             try:
@@ -156,13 +156,7 @@ def generate_video(job: dict) -> dict:
                 controlnet_aux_repo_id = "lllyasviel/ControlNet"
 
                 # No need for runtime hf_login here as models are pre-downloaded by Dockerfile
-                # HUGGING_FACE_TOKEN = os.getenv("HUGGING_FACE_HUB_TOKEN") or HfFolder.get_token()
-                # if HUGGING_FACE_TOKEN:
-                #     print("🔐 Hugging Face token detected.", flush=True)
-                #     hf_login(token=HUGGING_FACE_TOKEN, add_to_git_credential=False)
-                # else:
-                #     print("⚠️ Hugging Face token not found. This should be handled during Docker build.", flush=True)
-
+                # and from_pretrained automatically looks in HF_HOME.
 
                 print(f"  Loading OpenPose ControlNet from {controlnet_openpose_id} (from cache)...", flush=True)
                 openpose_controlnet = ControlNetModel.from_pretrained(
@@ -215,16 +209,14 @@ def generate_video(job: dict) -> dict:
                     print(f"  Moving pipeline to GPU and float16...", flush=True)
                     pipe.to("cuda", dtype=torch.float16)
 
-                    # Auto-Fix Logic for CLIP float32 Compatibility
+                    # Auto-Fix Logic for CLIP float32 Compatibility (addressed 'image_proj_model' AttributeError)
                     try:
-                        if hasattr(pipe, "image_encoder") and pipe.image_encoder is not None:
-                            encoder_cls_name = pipe.image_encoder.__class__.__name__.lower()
-                            if "clip" in encoder_cls_name:
-                                if pipe.image_encoder.device.type == 'cpu':
-                                    pipe.image_encoder.to("cuda", dtype=torch.float32)
-                                else:
-                                    pipe.image_encoder.to(dtype=torch.float32)
-                                print("✅ image_encoder moved to float32 for compatibility (CLIP detected).", flush=True)
+                        if image_encoder is not None: # Ensure the global image_encoder exists
+                            if image_encoder.device.type == 'cpu':
+                                image_encoder.to("cuda", dtype=torch.float32)
+                            else:
+                                image_encoder.to(dtype=torch.float32)
+                            print("✅ image_encoder (CLIP) moved to float32 for compatibility.", flush=True)
                     except Exception as e:
                         print(f"⚠️ Failed to move image_encoder to float32: {e}", flush=True)
 
@@ -362,7 +354,7 @@ def generate_video(job: dict) -> dict:
                 num_frames=num_frames,
                 guidance_scale=7.5,
                 num_inference_steps=20,
-                control_image=control_images,
+                image=control_images,
                 controlnet_conditioning_scale=[openpose_scale, depth_scale],
                 ip_adapter_image=init_image,
                 cross_attention_kwargs=cross_attention_kwargs,

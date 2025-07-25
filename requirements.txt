@@ -33,18 +33,13 @@ flask==3.0.3
 xformers==0.0.25.post1
 
 # IP-Adapter (Tencent official) — install from source
-# Keep this as is. Your Dockerfile correctly installs git, build-essential, python3-dev
-# which are necessary for source installs.
+# Make sure your Dockerfile installs git, build-essential, python3-dev
 git+https://github.com/tencent-ailab/IP-Adapter.git@main#egg=ip_adapter
 
 # Pin huggingface_hub to a compatible version for diffusers==0.27.2 and transformers==4.38.2
 # It's good to pin this explicitly.
 huggingface_hub==0.20.3
 
-# Added: gdown is sometimes used for downloading weights, though hf_hub_download is preferred now.
-# Not strictly necessary if all models are from HF Hub but can be a safeguard.
-# gdown==4.7.1
-
 # Added: protobuf is a common dependency that can cause issues if not pinned
 # or if too new/old for other libraries. Pinning a widely compatible version is good.
-protobuf==3.20.3 # Pinned to a version commonly compatible with older tensorflow/torch dependencies
+protobuf==3.20.3

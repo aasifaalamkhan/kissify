@@ -35,51 +35,39 @@ RUN echo "--- Installing Python packages from requirements.txt ---" && \
 
 # --- ACTIVATE AND REVISE: Pre-fetch Hugging Face models during build ---
 # Use ARG for build-time secrets, then set ENV for runtime.
-# This ARGs needs to be passed to docker build command or RunPod build settings.
+# This ARG needs to be passed to docker build command or RunPod build settings.
 ARG HUGGING_FACE_HUB_TOKEN
 ENV HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
 
+# FIX: Removed leading whitespace from the python -c script lines.
+# FIX: Changed 'local_dir' to 'cache_dir' in snapshot_download calls.
 RUN echo "--- Pre-fetching Hugging Face models ---" && \
-    python -c " \
+    python -c "\
 import os; \
-from huggingface_hub import hf_hub_download, snapshot_download, login; \
-# Login using the env var set by ARG or attempt to read existing token \
+from huggingface_hub import snapshot_download, login; \
 token = os.getenv('HUGGING_FACE_HUB_TOKEN'); \
 if token: \
     print('Logging in to Hugging Face Hub...'); \
     login(token=token, add_to_git_credential=False); \
 else: \
     print('HUGGING_FACE_HUB_TOKEN not set as build arg. Proceeding without explicit login. Gated models may fail.'); \
-\
 hf_cache_dir = os.getenv('HF_HOME', '/app/hf_cache'); \
 print(f'Using HF_HOME: {hf_cache_dir}'); \
-\
 print('Pre-fetching SG161222/Realistic_Vision_V5.1_noVAE...'); \
-snapshot_download(repo_id='SG161222/Realistic_Vision_V5.1_noVAE', allow_patterns=['*.safetensors', '*.json'], local_dir=os.path.join(hf_cache_dir, 'models--SG161222--Realistic_Vision_V5.1_noVAE'), resume_download=True, token=token); \
-\
+snapshot_download(repo_id='SG161222/Realistic_Vision_V5.1_noVAE', allow_patterns=['*.safetensors', '*.json'], cache_dir=hf_cache_dir, resume_download=True, token=token); \
 print('Pre-fetching guoyww/animatediff-motion-adapter-v1-5-2...'); \
-snapshot_download(repo_id='guoyww/animatediff-motion-adapter-v1-5-2', allow_patterns=['*.safetensors', '*.json'], local_dir=os.path.join(hf_cache_dir, 'models--guoyww--animatediff-motion-adapter-v1-5-2'), resume_download=True, token=token); \
-\
+snapshot_download(repo_id='guoyww/animatediff-motion-adapter-v1-5-2', allow_patterns=['*.safetensors', '*.json'], cache_dir=hf_cache_dir, resume_download=True, token=token); \
 print('Pre-fetching lllyasviel/control_v11p_sd15_openpose...'); \
-snapshot_download(repo_id='lllyasviel/control_v11p_sd15_openpose', allow_patterns=['*.safetensors', '*.json'], local_dir=os.path.join(hf_cache_dir, 'models--lllyasviel--control_v11p_sd15_openpose'), resume_download=True, token=token); \
-\
+snapshot_download(repo_id='lllyasviel/control_v11p_sd15_openpose', allow_patterns=['*.safetensors', '*.json'], cache_dir=hf_cache_dir, resume_download=True, token=token); \
 print('Pre-fetching lllyasviel/control_v11f1p_sd15_depth...'); \
-snapshot_download(repo_id='lllyasviel/control_v11f1p_sd15_depth', allow_patterns=['*.safetensors', '*.json'], local_dir=os.path.join(hf_cache_dir, 'models--lllyasviel--control_v11f1p_sd15_depth'), resume_download=True, token=token); \
-\
+snapshot_download(repo_id='lllyasviel/control_v11f1p_sd15_depth', allow_patterns=['*.safetensors', '*.json'], cache_dir=hf_cache_dir, resume_download=True, token=token); \
 print('Pre-fetching h94/IP-Adapter...'); \
-# For IP-Adapter, snapshot_download for the repo, then verify specific files. \
-# The `local_dir` here needs to match how HuggingFace Hub structures its cache: \
-# it typically creates subdirectories like `models--h94--IP-Adapter` for the main repo. \
-snapshot_download(repo_id='h94/IP-Adapter', allow_patterns=['models/*', 'ip-adapter_sd15.bin'], local_dir=os.path.join(hf_cache_dir, 'models--h94--IP-Adapter'), resume_download=True, token=token); \
-\
+snapshot_download(repo_id='h94/IP-Adapter', allow_patterns=['models/*', 'ip-adapter_sd15.bin'], cache_dir=hf_cache_dir, resume_download=True, token=token); \
 print('Pre-fetching openai/clip-vit-large-patch14...'); \
-snapshot_download(repo_id='openai/clip-vit-large-patch14', local_dir=os.path.join(hf_cache_dir, 'models--openai--clip-vit-large-patch14'), resume_download=True, token=token); \
-\
+snapshot_download(repo_id='openai/clip-vit-large-patch14', cache_dir=hf_cache_dir, resume_download=True, token=token); \
 print('Pre-fetching lllyasviel/ControlNet (for aux detectors)...'); \
-snapshot_download(repo_id='lllyasviel/ControlNet', local_dir=os.path.join(hf_cache_dir, 'models--lllyasviel--ControlNet'), resume_download=True, token=token); \
-\
-print('Model pre-fetching complete.'); \
-" && \
+snapshot_download(repo_id='lllyasviel/ControlNet', cache_dir=hf_cache_dir, resume_download=True, token=token); \
+print('Model pre-fetching complete.');" && \
     echo "--- Pre-fetched models successfully ---"
 
 # Copy your main application script into the container.
