@@ -1,4 +1,3 @@
-#First file is Dockerfile
 # Use the official PyTorch image with CUDA 11.8 and Python 3.10
 FROM pytorch/pytorch:2.2.0-cuda11.8-cudnn8-devel
 
