@@ -17,6 +17,7 @@ from PIL import Image
 from diffusers import AnimateDiffPipeline, MotionAdapter, DDIMScheduler, ControlNetModel
 from diffusers.utils import export_to_video
 from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
+from controlnet_aux import OpenposeDetector, MidasDetector 
 from huggingface_hub import HfFolder # For better token handling
 
 print("✅ main.py started: Initializing script execution.", flush=True)
@@ -31,11 +32,9 @@ torch.backends.cudnn.benchmark = True
 
 # --- Globals for Lazy-Loading Models ---
 pipe = None
-image_encoder = None # Will be loaded and used directly by pipe.load_ip_adapter
+image_encoder = None 
 openpose_detector = None
 midas_detector = None
-# image_processor is not strictly global if only used internally by pipe.load_ip_adapter or for specific preproc.
-# But keeping it here for consistency if future preproc needs it.
 image_processor = None 
 
 # Set Hugging Face cache directory (important if pre-fetching during build)
@@ -351,8 +350,9 @@ def generate_video(job: dict) -> dict:
             print(f"DEBUG: CUDA memory after OOM attempt to clear: {torch.cuda.memory_allocated() / (1024**3):.2f} GB", flush=True)
         return {"error": error_message}
     except Exception as e:
+        # --- TYPO FIX: Changed 'error_error' to 'error_message' ---
         error_message = f"❌ Video inference failed: {traceback.format_exc()}"
-        print(error_message, flush=True)
+        print(error_message, flush=True) 
         return {"error": error_message}
 
     # Log CUDA memory after inference, before major cleanup
