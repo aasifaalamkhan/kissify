@@ -11,8 +11,7 @@ from diffusers import (
 from diffusers.models import UNet2DModel
 from transformers import CLIPVisionModelWithProjection, CLIPImageProcessor
 from huggingface_hub import hf_hub_download
-from safetensors.torch import load_file
-
+# safetensors is no longer needed for this loading method
 
 def main(args):
     """
@@ -23,15 +22,16 @@ def main(args):
     lora_model_id = "Remade-AI/kissing"
     lora_filename = "kissing_30_epochs.safetensors"
     
+    # The UNet config is missing, so we borrow it from a similar, correctly configured model.
     config_source_model_id = "ali-vilab/i2vgen-xl"
 
     # Use bfloat16 for memory efficiency
     dtype = torch.bfloat16
     print("Loading model components...")
 
-    # --- Manually Load All Components ---
+    # --- 1. Manually Load All Components ---
 
-    # VAE
+    # VAE (with fixes for its unique architecture)
     vae = AutoencoderKL.from_pretrained(
         model_id,
         subfolder="vae",
@@ -40,7 +40,7 @@ def main(args):
         ignore_mismatched_sizes=True,
     )
 
-    # Image Encoder and Processor
+    # Image Encoder and its Processor (with corrected path)
     image_encoder = CLIPVisionModelWithProjection.from_pretrained(
         model_id, subfolder="image_encoder", torch_dtype=dtype
     )
@@ -48,9 +48,8 @@ def main(args):
         model_id, subfolder="image_processor"
     )
 
-    # --- UNet (New, More Robust Fix) ---
-    # The `from_pretrained` method fails because the model is missing a root config.json.
-    # We will load the components manually to bypass this.
+    # --- UNet (Definitive Fix) ---
+    # The model uses a .bin file for the UNet, not .safetensors. We must load it manually.
 
     # 1. Borrow the config from a working model
     print("Borrowing UNet config from a working model...")
@@ -60,28 +59,29 @@ def main(args):
     print("Creating UNet structure from config...")
     unet = I2VGenXLUNet.from_config(unet_config)
 
-    # 3. Manually download the UNet weights (the .safetensors file)
-    print("Manually downloading UNet weights...")
+    # 3. Manually download the correct UNet weights (the .bin file)
+    print("Manually downloading UNet weights (diffusion_pytorch_model.bin)...")
     unet_weights_path = hf_hub_download(
         repo_id=model_id,
-        filename="unet/diffusion_pytorch_model.safetensors",
+        filename="unet/diffusion_pytorch_model.bin", # CORRECT FILENAME
     )
 
-    # 4. Load the weights into the UNet structure
+    # 4. Load the weights into the UNet structure using torch.load for .bin files
     print("Loading state dictionary into UNet...")
-    state_dict = load_file(unet_weights_path, device="cpu")
+    state_dict = torch.load(unet_weights_path, map_location="cpu")
     unet.load_state_dict(state_dict)
     
     # 5. Ensure the UNet is in the correct data type (bfloat16)
     unet.to(dtype)
     print("UNet loaded successfully.")
 
+
     # Scheduler
     scheduler = UniPCMultistepScheduler.from_pretrained(
         model_id, subfolder="scheduler"
     )
 
-    # --- Assemble The Pipeline Manually ---
+    # --- 2. Assemble The Pipeline Manually ---
     pipe = I2VGenXLPipeline(
         vae=vae,
         image_encoder=image_encoder,
@@ -93,22 +93,22 @@ def main(args):
     )
     print("Pipeline created successfully.")
 
-    # --- Apply LoRA Weights ---
+    # --- 3. Apply LoRA Weights ---
     print("Loading and fusing LoRA weights...")
     pipe.load_lora_weights(lora_model_id, weight_name=lora_filename)
     pipe.fuse_lora(lora_scale=args.lora_scale)
     print("LoRA fused.")
 
-    # --- Optimizations & Device Placement ---
+    # --- 4. Optimizations & Device Placement ---
     pipe.enable_xformers_memory_efficient_attention()
     pipe.enable_model_cpu_offload()
 
-    # --- Prepare Inputs ---
+    # --- 5. Prepare Inputs ---
     generator = torch.manual_seed(args.seed)
     image = Image.open(args.image_path).convert("RGB")
     print(f"Input image '{args.image_path}' loaded.")
 
-    # --- Run Inference ---
+    # --- 6. Run Inference ---
     print("Generating video...")
     video_frames = pipe(
         prompt=args.prompt,
@@ -123,7 +123,7 @@ def main(args):
     ).frames[0]
     print("Video generation complete.")
 
-    # --- Save Output ---
+    # --- 7. Save Output ---
     export_to_video(video_frames, args.output_path, fps=args.fps)
     print(f"Video saved to '{args.output_path}'")
 
