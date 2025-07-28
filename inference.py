@@ -139,7 +139,7 @@ if __name__ == "__main__":
         "--num_frames", type=int, default=16, help="Number of frames to generate."
     )
     parser.add_argument("--fps", type=int, default=8, help="FPS of the output video.")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed.")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")
     parser.add_argument("--width", type=int, default=852, help="Width of the video.")
     parser.add_argument("--height", type=int, default=480, help="Height of the video.")
     parser.add_argument(
