@@ -1,14 +1,14 @@
-torch==2.3.0
-torchvision==0.18.0
-torchaudio==2.3.0
+torch==2.4.0
+torchvision==0.19.0
+torchaudio==2.4.0
 --extra-index-url https://download.pytorch.org/whl/cu121
 
-diffusers
-transformers==4.43.2
-accelerate==0.32.1
-huggingface-hub==0.25.0
+diffusers==0.34.0
+transformers==4.45.0
+accelerate==0.34.0
+huggingface-hub==0.28.0
 safetensors==0.4.3
-peft==0.15.0
+peft==0.17.0
 Pillow==10.4.0
 ftfy==6.2.0
 xformers==0.0.26.post1
