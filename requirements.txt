@@ -8,7 +8,7 @@ transformers==4.45.0
 accelerate==0.34.0
 huggingface-hub==0.28.0
 safetensors==0.4.3
-peft==0.17.0
+peft==0.16.0
 Pillow==10.4.0
 ftfy==6.2.0
 xformers==0.0.26.post1
