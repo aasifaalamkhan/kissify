@@ -4,11 +4,9 @@ from PIL import Image
 from diffusers.utils import export_to_video
 from diffusers import (
     I2VGenXLPipeline,
-    I2VGenXLUNet,
     AutoencoderKL,
-    UniPCMultistepScheduler,
 )
-from transformers import CLIPVisionModelWithProjection, CLIPImageProcessor
+from transformers import CLIPImageProcessor
 
 
 def main(args):
@@ -24,14 +22,8 @@ def main(args):
     dtype = torch.bfloat16
     print("Loading model components...")
 
-    # 1. Load all necessary components from their subfolders
-    image_encoder = CLIPVisionModelWithProjection.from_pretrained(
-        model_id, subfolder="image_encoder", torch_dtype=dtype
-    )
-    feature_extractor = CLIPImageProcessor.from_pretrained(
-        model_id, subfolder="image_processor"
-    )
-    # Added ignore_mismatched_sizes=True and low_cpu_mem_usage=False to handle the VAE's unique architecture
+    # 1. Pre-load only the components with known issues.
+    # The VAE has a non-standard architecture.
     vae = AutoencoderKL.from_pretrained(
         model_id,
         subfolder="vae",
@@ -39,20 +31,18 @@ def main(args):
         low_cpu_mem_usage=False,
         ignore_mismatched_sizes=True,
     )
-    unet = I2VGenXLUNet.from_pretrained(model_id, subfolder="unet", torch_dtype=dtype)
-    scheduler = UniPCMultistepScheduler.from_pretrained(
-        model_id, subfolder="scheduler"
+    # The feature_extractor config is in a non-standard folder.
+    feature_extractor = CLIPImageProcessor.from_pretrained(
+        model_id, subfolder="image_processor"
     )
 
-    # 2. Create the pipeline and pass all components explicitly
-    pipe = I2VGenXLPipeline(
+    # 2. Load the main pipeline, passing the pre-loaded components.
+    # The pipeline will handle loading the other parts (UNet, etc.) correctly.
+    pipe = I2VGenXLPipeline.from_pretrained(
+        model_id,
         vae=vae,
-        image_encoder=image_encoder,
         feature_extractor=feature_extractor,
-        unet=unet,
-        scheduler=scheduler,
-        text_encoder=None,
-        tokenizer=None,
+        torch_dtype=dtype
     )
     print("Pipeline created.")
 
