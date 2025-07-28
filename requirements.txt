@@ -1,3 +1,8 @@
+torch==2.3.2
+torchvision==0.18.2
+torchaudio==2.3.2
+--extra-index-url https://download.pytorch.org/whl/cu121
+
 diffusers==0.29.2
 transformers==4.42.4
 accelerate==0.31.0
