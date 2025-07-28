@@ -8,7 +8,7 @@ from diffusers import (
     AutoencoderKL,
     UniPCMultistepScheduler,
 )
-from diffusers.models import UNet2DModel  # Corrected import path
+from diffusers.models import UNet2DModel
 from transformers import CLIPVisionModelWithProjection, CLIPImageProcessor
 
 
@@ -21,7 +21,7 @@ def main(args):
     lora_model_id = "Remade-AI/kissing"
     lora_filename = "kissing_30_epochs.safetensors"
     
-    # The UNet config is missing from the main model, so we borrow it from a similar, correctly configured model.
+    # The UNet config is missing, so we borrow it from a similar, correctly configured model.
     config_source_model_id = "ali-vilab/i2vgen-xl"
 
     # Use bfloat16 for memory efficiency
@@ -47,8 +47,13 @@ def main(args):
         model_id, subfolder="image_processor"
     )
 
-    # UNet (using the borrowed config)
+    # --- UNet (The Fix for your error is here) ---
+    # 1. Borrow the config from a working model
+    print("Borrowing UNet config from a working model...")
     unet_config = UNet2DModel.load_config(config_source_model_id, subfolder="unet")
+
+    # 2. Load the UNet weights from the target model using the borrowed config
+    print("Loading UNet weights...")
     unet = I2VGenXLUNet.from_pretrained(
         model_id, config=unet_config, subfolder="unet", torch_dtype=dtype
     )
