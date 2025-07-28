@@ -31,7 +31,7 @@ def main(args):
     torch_dtype = torch.float16
 
     # Load the base pipeline. The WanPipeline is specifically designed for this model family.
-    pipe = WanPipeline.from_pretrained(
+    pipe = I2VGenXLPipeline.from_pretrained(
         base_model_id,
         torch_dtype=torch_dtype,
     )
