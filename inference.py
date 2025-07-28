@@ -25,14 +25,15 @@ def main(args):
     print("Loading model components...")
 
     # 1. Load all necessary components from their subfolders
+    # REMOVED variant="fp16" from the following lines
     image_encoder = CLIPVisionModelWithProjection.from_pretrained(
-        model_id, subfolder="image_encoder", torch_dtype=dtype, variant="fp16"
+        model_id, subfolder="image_encoder", torch_dtype=dtype
     )
     feature_extractor = CLIPImageProcessor.from_pretrained(
         model_id, subfolder="image_encoder"
     )
-    vae = AutoencoderKL.from_pretrained(model_id, subfolder="vae", torch_dtype=dtype, variant="fp16")
-    unet = I2VGenXLUNet.from_pretrained(model_id, subfolder="unet", torch_dtype=dtype, variant="fp16")
+    vae = AutoencoderKL.from_pretrained(model_id, subfolder="vae", torch_dtype=dtype)
+    unet = I2VGenXLUNet.from_pretrained(model_id, subfolder="unet", torch_dtype=dtype)
     scheduler = UniPCMultistepScheduler.from_pretrained(
         model_id, subfolder="scheduler"
     )
