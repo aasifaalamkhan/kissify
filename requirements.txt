@@ -6,7 +6,7 @@ torchaudio==2.3.0
 diffusers
 transformers==4.43.2
 accelerate==0.32.1
-huggingface-hub==0.23.4
+huggingface-hub==0.25.0
 safetensors==0.4.3
 peft==0.15.0
 Pillow==10.4.0
