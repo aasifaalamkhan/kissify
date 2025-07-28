@@ -11,7 +11,8 @@ from diffusers import (
 from diffusers.models import UNet2DModel
 from transformers import CLIPVisionModelWithProjection, CLIPImageProcessor
 from huggingface_hub import hf_hub_download
-# safetensors is no longer needed for this loading method
+from safetensors.torch import load_file
+
 
 def main(args):
     """
@@ -22,16 +23,16 @@ def main(args):
     lora_model_id = "Remade-AI/kissing"
     lora_filename = "kissing_30_epochs.safetensors"
     
-    # The UNet config is missing, so we borrow it from a similar, correctly configured model.
+    # We still need to borrow the config to know the UNet's architecture
     config_source_model_id = "ali-vilab/i2vgen-xl"
 
     # Use bfloat16 for memory efficiency
     dtype = torch.bfloat16
     print("Loading model components...")
 
-    # --- 1. Manually Load All Components ---
+    # --- 1. Manually Load Standard Components ---
 
-    # VAE (with fixes for its unique architecture)
+    # VAE
     vae = AutoencoderKL.from_pretrained(
         model_id,
         subfolder="vae",
@@ -40,7 +41,7 @@ def main(args):
         ignore_mismatched_sizes=True,
     )
 
-    # Image Encoder and its Processor (with corrected path)
+    # Image Encoder and Processor
     image_encoder = CLIPVisionModelWithProjection.from_pretrained(
         model_id, subfolder="image_encoder", torch_dtype=dtype
     )
@@ -48,40 +49,41 @@ def main(args):
         model_id, subfolder="image_processor"
     )
 
-    # --- UNet (Definitive Fix) ---
-    # The model uses a .bin file for the UNet, not .safetensors. We must load it manually.
+    # --- UNet (Definitive Fix for Unconventional Model) ---
+    # The UNet weights are in the root 'wan21.safetensors' file, not a 'unet' folder.
 
-    # 1. Borrow the config from a working model
-    print("Borrowing UNet config from a working model...")
+    # 1. Borrow the config to create the empty UNet structure
+    print("Borrowing UNet config to build model structure...")
     unet_config = UNet2DModel.load_config(config_source_model_id, subfolder="unet")
-
-    # 2. Create the UNet structure from the borrowed config.
-    print("Creating UNet structure from config...")
     unet = I2VGenXLUNet.from_config(unet_config)
 
-    # 3. Manually download the correct UNet weights (the .bin file)
-    print("Manually downloading UNet weights (diffusion_pytorch_model.bin)...")
+    # 2. Download the main safetensors file from the model's root directory
+    print("Downloading main weights file 'wan21.safetensors'...")
     unet_weights_path = hf_hub_download(
         repo_id=model_id,
-        filename="unet/diffusion_pytorch_model.bin", # CORRECT FILENAME
+        filename="wan21.safetensors",  # THIS IS THE CORRECT FILE
     )
 
-    # 4. Load the weights into the UNet structure using torch.load for .bin files
-    print("Loading state dictionary into UNet...")
-    state_dict = torch.load(unet_weights_path, map_location="cpu")
-    unet.load_state_dict(state_dict)
+    # 3. Load the entire state dictionary from the file
+    print("Loading state dictionary from 'wan21.safetensors'...")
+    state_dict = load_file(unet_weights_path, device="cpu")
+
+    # 4. Load the weights into the UNet structure non-strictly.
+    # `strict=False` is ESSENTIAL here. It tells the model to only load the
+    # matching weights (for the UNet) and ignore all other weights in the file.
+    print("Loading UNet-specific weights into the model...")
+    unet.load_state_dict(state_dict, strict=False)
     
-    # 5. Ensure the UNet is in the correct data type (bfloat16)
+    # 5. Ensure the UNet is in the correct data type
     unet.to(dtype)
     print("UNet loaded successfully.")
-
 
     # Scheduler
     scheduler = UniPCMultistepScheduler.from_pretrained(
         model_id, subfolder="scheduler"
     )
 
-    # --- 2. Assemble The Pipeline Manually ---
+    # --- 2. Assemble The Pipeline ---
     pipe = I2VGenXLPipeline(
         vae=vae,
         image_encoder=image_encoder,
