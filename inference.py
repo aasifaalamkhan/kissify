@@ -13,7 +13,7 @@ import argparse
 import os
 import torch
 from PIL import Image
-from diffusers import WanPipeline, UniPCMultistepScheduler
+from diffusers import I2VGenXLPipeline, UniPCMultistepScheduler
 from diffusers.utils import export_to_video
 
 def main(args):
