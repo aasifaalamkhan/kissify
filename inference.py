@@ -4,26 +4,33 @@ from PIL import Image
 from diffusers.utils import export_to_video
 from diffusers import (
     I2VGenXLPipeline,
+    I2VGenXLUNet,
     AutoencoderKL,
+    UniPCMultistepScheduler,
 )
-from transformers import CLIPImageProcessor
+from transformers import CLIPVisionModelWithProjection, CLIPImageProcessor
+from diffusers.models.modeling_utils import UNet2DModel
 
 
 def main(args):
     """
     Main function to run the image-to-video inference pipeline.
     """
-    # Define model paths
+    # --- Model & LoRA Identifiers ---
     model_id = "Wan-AI/Wan2.1-I2V-14B-480P-Diffusers"
     lora_model_id = "Remade-AI/kissing"
     lora_filename = "kissing_30_epochs.safetensors"
+    
+    # The UNet config is missing from the main model, so we borrow it from a similar, correctly configured model.
+    config_source_model_id = "ali-vilab/i2vgen-xl"
 
     # Use bfloat16 for memory efficiency
     dtype = torch.bfloat16
     print("Loading model components...")
 
-    # 1. Pre-load only the components with known issues.
-    # The VAE has a non-standard architecture.
+    # --- 1. Manually Load All Components ---
+
+    # VAE (with fixes for its unique architecture)
     vae = AutoencoderKL.from_pretrained(
         model_id,
         subfolder="vae",
@@ -31,40 +38,54 @@ def main(args):
         low_cpu_mem_usage=False,
         ignore_mismatched_sizes=True,
     )
-    # The feature_extractor config is in a non-standard folder.
+
+    # Image Encoder and its Processor (with corrected path)
+    image_encoder = CLIPVisionModelWithProjection.from_pretrained(
+        model_id, subfolder="image_encoder", torch_dtype=dtype
+    )
     feature_extractor = CLIPImageProcessor.from_pretrained(
         model_id, subfolder="image_processor"
     )
 
-    # 2. Load the main pipeline, passing the pre-loaded components.
-    # The pipeline will handle loading the other parts (UNet, etc.) correctly.
-    pipe = I2VGenXLPipeline.from_pretrained(
-        model_id,
-        vae=vae,
-        feature_extractor=feature_extractor,
-        torch_dtype=dtype
+    # UNet (using the borrowed config)
+    unet_config = UNet2DModel.load_config(config_source_model_id, subfolder="unet")
+    unet = I2VGenXLUNet.from_pretrained(
+        model_id, config=unet_config, subfolder="unet", torch_dtype=dtype
     )
-    print("Pipeline created.")
 
-    # 3. Apply LoRA weights
+    # Scheduler
+    scheduler = UniPCMultistepScheduler.from_pretrained(
+        model_id, subfolder="scheduler"
+    )
+
+    # --- 2. Assemble The Pipeline Manually ---
+    pipe = I2VGenXLPipeline(
+        vae=vae,
+        image_encoder=image_encoder,
+        feature_extractor=feature_extractor,
+        unet=unet,
+        scheduler=scheduler,
+        text_encoder=None,
+        tokenizer=None,
+    )
+    print("Pipeline created successfully.")
+
+    # --- 3. Apply LoRA Weights ---
     print("Loading and fusing LoRA weights...")
     pipe.load_lora_weights(lora_model_id, weight_name=lora_filename)
-    # Fuse LoRA for faster inference. Adjust lora_scale as needed.
     pipe.fuse_lora(lora_scale=args.lora_scale)
     print("LoRA fused.")
 
-    # 4. Set up optimizations and move to GPU
-    # Xformers for memory-efficient attention
+    # --- 4. Optimizations & Device Placement ---
     pipe.enable_xformers_memory_efficient_attention()
-    # Offload model parts to CPU to save VRAM
     pipe.enable_model_cpu_offload()
 
-    # 5. Prepare inputs
+    # --- 5. Prepare Inputs ---
     generator = torch.manual_seed(args.seed)
     image = Image.open(args.image_path).convert("RGB")
     print(f"Input image '{args.image_path}' loaded.")
 
-    # 6. Run inference
+    # --- 6. Run Inference ---
     print("Generating video...")
     video_frames = pipe(
         prompt=args.prompt,
@@ -79,7 +100,7 @@ def main(args):
     ).frames[0]
     print("Video generation complete.")
 
-    # 7. Save the output
+    # --- 7. Save Output ---
     export_to_video(video_frames, args.output_path, fps=args.fps)
     print(f"Video saved to '{args.output_path}'")
 
