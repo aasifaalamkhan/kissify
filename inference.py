@@ -8,8 +8,8 @@ from diffusers import (
     AutoencoderKL,
     UniPCMultistepScheduler,
 )
+from diffusers.models import UNet2DModel  # Corrected import path
 from transformers import CLIPVisionModelWithProjection, CLIPImageProcessor
-from diffusers.models.modeling_utils import UNet2DModel
 
 
 def main(args):
