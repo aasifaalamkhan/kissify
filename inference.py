@@ -28,11 +28,17 @@ def main(args):
     image_encoder = CLIPVisionModelWithProjection.from_pretrained(
         model_id, subfolder="image_encoder", torch_dtype=dtype
     )
-    # Corrected the subfolder path from "image_encoder" to "image_processor"
     feature_extractor = CLIPImageProcessor.from_pretrained(
         model_id, subfolder="image_processor"
     )
-    vae = AutoencoderKL.from_pretrained(model_id, subfolder="vae", torch_dtype=dtype)
+    # Added ignore_mismatched_sizes=True and low_cpu_mem_usage=False to handle the VAE's unique architecture
+    vae = AutoencoderKL.from_pretrained(
+        model_id,
+        subfolder="vae",
+        torch_dtype=dtype,
+        low_cpu_mem_usage=False,
+        ignore_mismatched_sizes=True,
+    )
     unet = I2VGenXLUNet.from_pretrained(model_id, subfolder="unet", torch_dtype=dtype)
     scheduler = UniPCMultistepScheduler.from_pretrained(
         model_id, subfolder="scheduler"
